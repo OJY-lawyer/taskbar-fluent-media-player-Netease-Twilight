@@ -46,7 +46,7 @@ Album 与播放器区域滚轮默认切换曲目，Album 点击会穿透到播�
 
 - 当前按 Twilight Echo `1.1.2` 测试。
 - 建议在“设置 > 常规”中开启“原生媒体控制（SMTC）”。
-- SMTC 未实际注册时，本 Mod 会自动使用 Windows UI Automation，从客户端公开的界面元素读取曲目、播放状态、进度、控制能力和收藏状态。
+- 无论 SMTC 是否可用，当前曲目身份、播放状态、进度、控制能力和收藏状态都以客户端公开的 Windows UI Automation 信息为准，避免系统媒体信息更新较慢时让任务栏落后一曲。SMTC 仍用于系统级播放命令，并且只在曲目身份一致时补充原生封面。
 - 如果 Twilight Echo 不在默认位置，请在本 Mod 的“应用接入”中填写 `TwilightEcho.exe` 的完整路径。
 - UI Automation 兼容模式下不提供随机、循环和快进/后退能力。
 
@@ -83,8 +83,11 @@ Album 与播放器区域滚轮默认切换曲目，Album 点击会穿透到播�
 
 ## 版本说明
 
-当前版本：`1.6.0-net25`
+当前版本：`1.6.0-net26`
 
+- 修复 Twilight Echo 第一次切歌没有更新、第二次才追到上一首的“一曲延迟”。插件不读取播放队列，也不猜下一首；曲名与歌手现在以客户端当前界面为准。
+- 切歌时立即作废上一曲的歌词和封面任务，在短暂更新窗口内拒绝旧曲快照，避免旧内容重新写回。
+- Twilight Echo 歌词时钟改为跟随实际进度读数。只有观察到进度真实前进后才做最多 1 秒的平滑补偿，客户端启动或卡顿时不会无限提前。
 - 统一 Twilight Echo 状态提交入口，并拒绝播放命令前启动的过期查询，修复暂停后歌词继续推进的问题。
 - Album 暂停遮罩改为显示播放图标，符合“点击后继续播放”的操作语义。
 - 默认关闭暂停时的封面暂停遮罩，避免播放与暂停状态下视觉上始终存在暂停符号；中间播放按钮仍会正常切换。
@@ -156,7 +159,7 @@ SMTC must be enabled in the NetEase client. In the Chinese client this is the op
 
 - Compatibility has been tested with Twilight Echo `1.1.2`.
 - Enabling Native media controls (SMTC) under Settings > General is recommended.
-- If Twilight Echo does not register an SMTC session, the mod falls back to Windows UI Automation and reads the track, playback state, timeline, available controls, and favorite state from accessibility elements exposed by the client.
+- Whether or not SMTC is available, the current track identity, playback state, timeline, available controls, and favorite state come from accessibility elements exposed by the client. This prevents delayed system metadata from leaving the taskbar one track behind. SMTC remains available for system transport commands and supplements native artwork only when the identity matches.
 - If Twilight Echo is installed elsewhere, set the full path to `TwilightEcho.exe` under App integration.
 - Shuffle, repeat, and seeking are unavailable in the UI Automation fallback mode.
 
@@ -193,8 +196,11 @@ All matching is performed locally. This repository contains no account credentia
 
 ## Version
 
-Current version: `1.6.0-net25`
+Current version: `1.6.0-net26`
 
+- Fixes the Twilight Echo one-track delay where the first skip was ignored and a later skip only revealed the previous track. The mod does not inspect or predict the playback queue; title and artist now follow the client's current UI.
+- Invalidates old lyric and artwork work as soon as a skip succeeds, then rejects old-track snapshots during a short metadata settle window.
+- Drives Twilight Echo lyrics from observed progress. Wall-clock smoothing starts only after real movement and is capped at one second, so startup stalls cannot make lyrics run indefinitely ahead.
 - Uses one Twilight Echo state commit path and rejects observations started before the latest playback command, preventing lyrics from advancing after pause.
 - Shows a play glyph on the paused Album overlay, matching the action performed when clicked.
 - Disables the album-art pause overlay by default so a pause symbol is not always present across both playback states; the main transport button still switches normally.
