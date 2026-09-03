@@ -5,7 +5,7 @@
 // @description     Unofficial fork for NetEase Cloud Music and Twilight Echo with taskbar controls, favorites, artwork, and synchronized lyrics.
 // @description:zh-CN 支持网易云音乐与 Twilight Echo 的播放控制、红心收藏和任务栏同步歌词。
 // @description:ru-RU Taskbar Fluent Media Player — это мод Windhawk, который интегрирует современный медиаплеер в стиле Fluent Design прямо в панель задач Windows 11. Он позволяет управлять музыкой и просматривать информацию о треке без прерывания работы.
-// @version         1.6.0-net23
+// @version         1.6.0-net24
 // @author          Salyts (original), OJY (fork)
 // @github          https://github.com/OJY-bot/taskbar-fluent-media-player-netease-twilight
 // @license         MIT
@@ -4858,6 +4858,8 @@ static bool InvokeTwilightTransportControl(int cmd) {
                 !HasCssClassToken(className, classToken)) {
                 continue;
             }
+            bool wasPlaying =
+                HasCssClassToken(className, L"is-playing");
             BOOL enabled = FALSE;
             element->get_CurrentIsEnabled(&enabled);
             if (!enabled) return false;
@@ -4868,7 +4870,35 @@ static bool InvokeTwilightTransportControl(int cmd) {
                     invoke.put_void())) && invoke &&
                 SUCCEEDED(invoke->Invoke())) {
                 g_twilightAccessibleHost = hwnd;
-                g_twilightLikeNextPollTick = 0;
+                if (cmd == 2) {
+                    ULONGLONG nowTick = GetTickCount64();
+                    TwilightAccessiblePlayback optimistic =
+                        GetTwilightAccessiblePlayback();
+                    if (optimistic.reachable) {
+                        if (wasPlaying && optimistic.observedAtTick &&
+                            nowTick >= optimistic.observedAtTick) {
+                            optimistic.positionMs += static_cast<int64_t>(
+                                nowTick - optimistic.observedAtTick);
+                            if (optimistic.durationMs > 0) {
+                                optimistic.positionMs = std::min(
+                                    optimistic.positionMs,
+                                    optimistic.durationMs);
+                            }
+                        }
+                        optimistic.isPlaying = !wasPlaying;
+                        optimistic.observedAtTick = nowTick;
+                        bool snapshotChanged =
+                            StoreTwilightAccessiblePlayback(optimistic);
+                        bool mediaChanged =
+                            ApplyTwilightAccessibleToMedia(optimistic);
+                        if (snapshotChanged || mediaChanged) {
+                            DispatchMediaUpdate();
+                        }
+                    }
+                    g_twilightLikeNextPollTick = nowTick + 250;
+                } else {
+                    g_twilightLikeNextPollTick = 0;
+                }
                 if (cmd == 1 || cmd == 3) {
                     g_neteaseSkipSucceededTick = GetTickCount64();
                 }
