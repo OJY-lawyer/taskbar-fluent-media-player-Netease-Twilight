@@ -5,7 +5,7 @@
 // @description     Unofficial fork for NetEase Cloud Music and Twilight Echo with taskbar controls, favorites, artwork, and synchronized lyrics.
 // @description:zh-CN 支持网易云音乐与 Twilight Echo 的播放控制、红心收藏和任务栏同步歌词。
 // @description:ru-RU Taskbar Fluent Media Player — это мод Windhawk, который интегрирует современный медиаплеер в стиле Fluent Design прямо в панель задач Windows 11. Он позволяет управлять музыкой и просматривать информацию о треке без прерывания работы.
-// @version         1.6.0-net24
+// @version         1.6.0-net25
 // @author          Salyts (original), OJY (fork)
 // @github          https://github.com/OJY-bot/taskbar-fluent-media-player-netease-twilight
 // @license         MIT
@@ -1141,15 +1141,15 @@ Salyts is the original author. The upstream visualizer includes capture and FFT 
       - "medium": "Среднее (по умолчанию)"
       - "high":   "Высокое (наилучшее качество)"
     - showPauseOverlay: false
-      $name: Show pause icon overlay on album art when paused
-      $name:zh-CN: 暂停时在专辑封面上显示暂停图标
-      $name:ru-RU: Показывать значок паузы на обложке при паузе
+      $name: Show play icon overlay on album art when paused
+      $name:zh-CN: 暂停时在专辑封面上显示播放图标
+      $name:ru-RU: Показывать значок воспроизведения на обложке при паузе
     - pauseOverlayIconSize: 16
-      $name: Pause icon size
-      $name:zh-CN: 暂停图标大小
-      $name:ru-RU: Размер значка паузы
+      $name: Paused overlay icon size
+      $name:zh-CN: 暂停遮罩图标大小
+      $name:ru-RU: Размер значка оверлея паузы
     - pauseOverlayOpacity: 60
-      $name: Pause overlay background opacity (0-100)
+      $name: Paused overlay background opacity (0-100)
       $name:zh-CN: 暂停遮罩背景不透明度（0～100）
       $name:ru-RU: Прозрачность фона оверлея паузы (0-100)
     - albumArtOpacity: 100
@@ -2488,6 +2488,7 @@ static HWND FindCurrentProcessTaskbarWnd();
 using WindowThreadProc = void(*)(void*);
 static bool RunFromWindowThread(HWND hWnd, WindowThreadProc proc, void* param);
 static void DispatchMediaUpdate();
+static void RefreshTaskbarMediaStateNow();
 static void RefreshNeteaseHeartButton();
 static void RefreshMiniPlayerFlyoutUI();
 static void FetchMiniSessionInfosAsync(HWND taskbarWnd);
@@ -2567,7 +2568,10 @@ static HWND g_neteaseAccessibleHost = nullptr;
 static std::atomic<NeteaseLikeState> g_twilightLikeState{
     NeteaseLikeState::Unknown};
 static std::atomic<ULONGLONG> g_twilightLikeForcePollAfterTick{0};
-static std::atomic<ULONGLONG> g_twilightLikeNextPollTick{0};
+static std::atomic<ULONGLONG> g_twilightNextPollTick{0};
+static std::atomic<uint64_t> g_twilightPlaybackCommandGeneration{0};
+static std::atomic<int> g_twilightPendingPlaybackState{-1};
+static std::atomic<ULONGLONG> g_twilightPendingPlaybackUntilTick{0};
 static HWND g_twilightAccessibleHost = nullptr;
 static std::atomic<bool> g_twilightProcessDetected{false};
 static std::atomic<ULONGLONG> g_twilightAccessibleLastSuccessTick{0};
@@ -2586,6 +2590,16 @@ struct TwilightAccessiblePlayback {
     int64_t durationMs = 0;
     ULONGLONG observedAtTick = 0;
     NeteaseLikeState favoriteState = NeteaseLikeState::Unknown;
+};
+enum class TwilightStoreResult {
+    Rejected,
+    Unchanged,
+    Changed,
+};
+struct TwilightCommitResult {
+    bool accepted = false;
+    bool changed = false;
+    TwilightAccessiblePlayback state;
 };
 static TwilightAccessiblePlayback g_twilightAccessiblePlayback;
 static std::mutex g_twilightAccessiblePlaybackMtx;
@@ -3886,10 +3900,34 @@ static void SendMediaCommandAsync(int cmd) {
                         auto info = session.GetPlaybackInfo();
                         bool isPlaying = info &&
                             info.PlaybackStatus() == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing;
-                        if (isPlaying)
-                            session.TryPauseAsync().get();
-                        else
-                            session.TryPlayAsync().get();
+                        bool commandSucceeded = isPlaying
+                            ? session.TryPauseAsync().get()
+                            : session.TryPlayAsync().get();
+                        bool stateChanged = false;
+                        if (commandSucceeded &&
+                            g_selectedPlayer.load() ==
+                                PlayerKind::TwilightEcho) {
+                            ULONGLONG nowTick = GetTickCount64();
+                            g_twilightPendingPlaybackUntilTick =
+                                nowTick + 1500;
+                            g_twilightPendingPlaybackState =
+                                isPlaying ? 0 : 1;
+                            g_twilightPlaybackCommandGeneration.fetch_add(1);
+                            std::lock_guard<std::mutex> sessionLock(
+                                g_sessionMtx);
+                            if (g_currentSession &&
+                                g_currentSession == session) {
+                                std::lock_guard<std::mutex> mediaLock(
+                                    g_mediaMtx);
+                                stateChanged =
+                                    g_media.isPlaying == isPlaying;
+                                g_media.isPlaying = !isPlaying;
+                            }
+                        }
+                        if (stateChanged) {
+                            DispatchMediaUpdate();
+                            RefreshTaskbarMediaStateNow();
+                        }
                         break;
                     }
                     case 3:
@@ -4167,17 +4205,13 @@ static void ExecuteMediaAction(const std::wstring& action, FrameworkElement cons
         SwitchMediaSession();
     } else if (action == L"play_pause") {
         SendMediaCommandAsync(2);
-        DispatchMediaUpdate();
     } else if (action == L"next_track") {
         SendMediaCommandAsync(3);
-        DispatchMediaUpdate();
     } else if (action == L"prev_track") {
         SendMediaCommandAsync(1);
-        DispatchMediaUpdate();
     } else if (action == L"stop") {
         g_forceSessionRefresh = true;
         SendMediaCommandAsync(4);
-        DispatchMediaUpdate();
         SpawnTrackedWorker([]() {
             for (DWORD delay : {300, 1200, 2500}) {
                 Sleep(delay);
@@ -4190,16 +4224,12 @@ static void ExecuteMediaAction(const std::wstring& action, FrameworkElement cons
         });
     } else if (action == L"rewind_5s") {
         SendMediaCommandAsync(5);
-        DispatchMediaUpdate();
     } else if (action == L"forward_5s") {
         SendMediaCommandAsync(6);
-        DispatchMediaUpdate();
     } else if (action == L"toggle_shuffle") {
         SendMediaCommandAsync(7);
-        DispatchMediaUpdate();
     } else if (action == L"toggle_repeat") {
         SendMediaCommandAsync(8);
-        DispatchMediaUpdate();
     } else if (action == L"open_app") {
         // Opening a player is deliberately restricted to the context-menu item,
         // which invokes this action without a source element.
@@ -4728,16 +4758,30 @@ static TwilightAccessiblePlayback QueryTwilightAccessiblePlayback() {
     return result;
 }
 
-static bool StoreTwilightAccessiblePlayback(
-    const TwilightAccessiblePlayback& state) {
+static TwilightStoreResult StoreTwilightAccessiblePlayback(
+    const TwilightAccessiblePlayback& state,
+    std::optional<uint64_t> expectedGeneration = std::nullopt) {
     std::lock_guard<std::mutex> lock(g_twilightAccessiblePlaybackMtx);
+    if (expectedGeneration &&
+        *expectedGeneration !=
+            g_twilightPlaybackCommandGeneration.load()) {
+        return TwilightStoreResult::Rejected;
+    }
     TwilightAccessiblePlayback next = state;
     bool samePlayback = g_twilightAccessiblePlayback.reachable &&
         next.reachable &&
         g_twilightAccessiblePlayback.title == next.title &&
         g_twilightAccessiblePlayback.artist == next.artist &&
         g_twilightAccessiblePlayback.isPlaying == next.isPlaying;
-    if (samePlayback && next.durationMs <= 0 &&
+    if (samePlayback && !next.isPlaying) {
+        next.positionMs = g_twilightAccessiblePlayback.positionMs;
+        next.observedAtTick =
+            g_twilightAccessiblePlayback.observedAtTick;
+        if (next.durationMs <= 0 &&
+            g_twilightAccessiblePlayback.durationMs > 0) {
+            next.durationMs = g_twilightAccessiblePlayback.durationMs;
+        }
+    } else if (samePlayback && next.durationMs <= 0 &&
         g_twilightAccessiblePlayback.durationMs > 0) {
         next.positionMs = g_twilightAccessiblePlayback.positionMs;
         next.durationMs = g_twilightAccessiblePlayback.durationMs;
@@ -4756,7 +4800,8 @@ static bool StoreTwilightAccessiblePlayback(
         g_twilightAccessiblePlayback.canSkipPrevious != next.canSkipPrevious ||
         g_twilightAccessiblePlayback.canSkipNext != next.canSkipNext;
     g_twilightAccessiblePlayback = std::move(next);
-    return changed;
+    return changed ? TwilightStoreResult::Changed
+                   : TwilightStoreResult::Unchanged;
 }
 
 static TwilightAccessiblePlayback GetTwilightAccessiblePlayback() {
@@ -4811,6 +4856,29 @@ static bool ApplyTwilightAccessibleToMedia(
         }
     }
     return changed;
+}
+
+static TwilightCommitResult CommitTwilightAccessiblePlayback(
+    const TwilightAccessiblePlayback& state,
+    std::optional<uint64_t> expectedGeneration = std::nullopt) {
+    TwilightCommitResult result;
+    auto storeResult =
+        StoreTwilightAccessiblePlayback(state, expectedGeneration);
+    result.accepted = storeResult != TwilightStoreResult::Rejected;
+    result.state = GetTwilightAccessiblePlayback();
+    if (!result.accepted) return result;
+
+    bool hasSystemSession = false;
+    {
+        std::lock_guard<std::mutex> lock(g_sessionMtx);
+        hasSystemSession = static_cast<bool>(g_currentSession);
+    }
+    bool mediaChanged = !hasSystemSession &&
+        ApplyTwilightAccessibleToMedia(result.state);
+    result.changed = storeResult == TwilightStoreResult::Changed ||
+                     mediaChanged;
+    if (result.changed) DispatchMediaUpdate();
+    return result;
 }
 
 static bool InvokeTwilightTransportControl(int cmd) {
@@ -4872,6 +4940,10 @@ static bool InvokeTwilightTransportControl(int cmd) {
                 g_twilightAccessibleHost = hwnd;
                 if (cmd == 2) {
                     ULONGLONG nowTick = GetTickCount64();
+                    g_twilightNextPollTick = nowTick + 250;
+                    g_twilightPlaybackCommandGeneration.fetch_add(1);
+                    g_twilightPendingPlaybackUntilTick = nowTick + 1500;
+                    g_twilightPendingPlaybackState = wasPlaying ? 0 : 1;
                     TwilightAccessiblePlayback optimistic =
                         GetTwilightAccessiblePlayback();
                     if (optimistic.reachable) {
@@ -4887,17 +4959,14 @@ static bool InvokeTwilightTransportControl(int cmd) {
                         }
                         optimistic.isPlaying = !wasPlaying;
                         optimistic.observedAtTick = nowTick;
-                        bool snapshotChanged =
-                            StoreTwilightAccessiblePlayback(optimistic);
-                        bool mediaChanged =
-                            ApplyTwilightAccessibleToMedia(optimistic);
-                        if (snapshotChanged || mediaChanged) {
-                            DispatchMediaUpdate();
+                        auto committed =
+                            CommitTwilightAccessiblePlayback(optimistic);
+                        if (committed.changed) {
+                            RefreshTaskbarMediaStateNow();
                         }
                     }
-                    g_twilightLikeNextPollTick = nowTick + 250;
                 } else {
-                    g_twilightLikeNextPollTick = 0;
+                    g_twilightNextPollTick = 0;
                 }
                 if (cmd == 1 || cmd == 3) {
                     g_neteaseSkipSucceededTick = GetTickCount64();
@@ -6109,36 +6178,6 @@ static NeteaseLyricsFetchResult FetchNeteaseLyrics(
     }
 }
 
-static NeteaseLyricsFetchResult FetchNeteaseLyricsBySongId(
-    const std::wstring& songId, int64_t expectedDurationMs) {
-    using namespace winrt::Windows::Data::Json;
-    if (songId.empty()) return {};
-    std::wstring json = DownloadNeteaseLyricsJson(songId);
-    if (json.empty()) {
-        return {NeteaseLyricsFetchStatus::RetryableFailure, {},
-                expectedDurationMs};
-    }
-    try {
-        JsonObject root = JsonObject::Parse(winrt::hstring(json));
-        if (!root.HasKey(L"lrc")) {
-            return {NeteaseLyricsFetchStatus::NoLyrics, {},
-                    expectedDurationMs};
-        }
-        JsonObject lrcObject = root.GetNamedObject(L"lrc");
-        auto lines = ParseNeteaseLrc(
-            std::wstring(lrcObject.GetNamedString(L"lyric", L"")));
-        if (lines.empty()) {
-            return {NeteaseLyricsFetchStatus::NoLyrics, {},
-                    expectedDurationMs};
-        }
-        return {NeteaseLyricsFetchStatus::Success, std::move(lines),
-                expectedDurationMs};
-    } catch (...) {
-        return {NeteaseLyricsFetchStatus::RetryableFailure, {},
-                expectedDurationMs};
-    }
-}
-
 static bool SetNeteaseCurrentLyric(const std::wstring& value) {
     std::lock_guard<std::mutex> lock(g_neteaseLyricsMtx);
     if (g_neteaseCurrentLyric == value) return false;
@@ -6158,6 +6197,21 @@ static void ClearNeteaseLyrics() {
         g_neteaseCurrentLyric.clear();
     }
     if (changed) DispatchMediaUpdate();
+}
+
+static int64_t ProjectTwilightPosition(
+    const TwilightAccessiblePlayback& playback,
+    ULONGLONG nowTick) {
+    int64_t positionMs = playback.positionMs;
+    if (playback.isPlaying && nowTick >= playback.observedAtTick) {
+        positionMs += static_cast<int64_t>(
+            nowTick - playback.observedAtTick);
+    }
+    positionMs = std::max<int64_t>(0, positionMs);
+    if (playback.durationMs > 0) {
+        positionMs = std::min(positionMs, playback.durationMs);
+    }
+    return positionMs;
 }
 
 static DWORD WINAPI NeteaseLyricsThreadProc(void*) {
@@ -6203,20 +6257,10 @@ static DWORD WINAPI NeteaseLyricsThreadProc(void*) {
             IsTwilightSession(appUserModelId) &&
             title == accessiblePlayback.title &&
             artist == accessiblePlayback.artist;
-        int64_t accessiblePositionMs = accessiblePlayback.positionMs;
-        ULONGLONG accessibleNowTick = GetTickCount64();
-        if (twilightFallbackActive && accessiblePlayback.isPlaying &&
-            accessibleNowTick >= accessiblePlayback.observedAtTick) {
-            accessiblePositionMs += static_cast<int64_t>(
-                accessibleNowTick - accessiblePlayback.observedAtTick);
-        }
-        if (twilightFallbackActive) {
-            accessiblePositionMs = std::max<int64_t>(0, accessiblePositionMs);
-            if (accessiblePlayback.durationMs > 0) {
-                accessiblePositionMs = std::min(
-                    accessiblePositionMs, accessiblePlayback.durationMs);
-            }
-        }
+        int64_t accessiblePositionMs = twilightFallbackActive
+            ? ProjectTwilightPosition(
+                  accessiblePlayback, GetTickCount64())
+            : 0;
 
         if (!g_settings.showNeteaseLyrics ||
             (!session && !twilightFallbackActive) ||
@@ -6315,6 +6359,26 @@ static DWORD WINAPI NeteaseLyricsThreadProc(void*) {
                 }
             }
 
+            if (twilightFallbackActive) {
+                auto latestPlayback = GetTwilightAccessiblePlayback();
+                if (latestPlayback.reachable &&
+                    latestPlayback.durationMs > 0 &&
+                    latestPlayback.title == title &&
+                    latestPlayback.artist == artist) {
+                    accessiblePlayback = std::move(latestPlayback);
+                    accessiblePositionMs = ProjectTwilightPosition(
+                        accessiblePlayback, GetTickCount64());
+                    isPlaying = accessiblePlayback.isPlaying;
+                }
+            } else if (session) {
+                std::lock_guard<std::mutex> lock(g_mediaMtx);
+                if (g_media.appUserModelId == appUserModelId &&
+                    g_media.title == title &&
+                    g_media.artist == artist) {
+                    isPlaying = g_media.isPlaying;
+                }
+            }
+
             auto progressNow = std::chrono::steady_clock::now();
             int64_t elapsedSinceUpdateMs = std::max<int64_t>(
                 0, std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -6392,14 +6456,37 @@ static DWORD WINAPI NeteaseLyricsThreadProc(void*) {
                         }
                     } catch (...) {}
                 }
-                auto upper = std::upper_bound(
-                    lines.begin(), lines.end(), positionMs,
-                    [](int64_t value, const NeteaseLyricLine& line) {
-                        return value < line.timeMs;
-                    });
-                std::wstring currentLine;
-                if (upper != lines.begin()) currentLine = std::prev(upper)->text;
-                if (SetNeteaseCurrentLyric(currentLine)) DispatchMediaUpdate();
+                bool playbackStateStillCurrent = true;
+                if (twilightFallbackActive) {
+                    auto latestPlayback = GetTwilightAccessiblePlayback();
+                    playbackStateStillCurrent =
+                        latestPlayback.reachable &&
+                        latestPlayback.title == title &&
+                        latestPlayback.artist == artist &&
+                        latestPlayback.isPlaying ==
+                            accessiblePlayback.isPlaying;
+                } else if (session) {
+                    std::lock_guard<std::mutex> lock(g_mediaMtx);
+                    playbackStateStillCurrent =
+                        g_media.appUserModelId == appUserModelId &&
+                        g_media.title == title &&
+                        g_media.artist == artist &&
+                        g_media.isPlaying == isPlaying;
+                }
+                if (playbackStateStillCurrent) {
+                    auto upper = std::upper_bound(
+                        lines.begin(), lines.end(), positionMs,
+                        [](int64_t value, const NeteaseLyricLine& line) {
+                            return value < line.timeMs;
+                        });
+                    std::wstring currentLine;
+                    if (upper != lines.begin()) {
+                        currentLine = std::prev(upper)->text;
+                    }
+                    if (SetNeteaseCurrentLyric(currentLine)) {
+                        DispatchMediaUpdate();
+                    }
+                }
             }
         }
         if (g_neteaseLyricsStopEvent &&
@@ -6449,7 +6536,10 @@ static void SwitchSelectedPlayer() {
     SetNeteaseLikeState(NeteaseLikeState::Unknown);
     SetTwilightLikeState(NeteaseLikeState::Unknown);
     g_twilightLikeForcePollAfterTick = 0;
-    g_twilightLikeNextPollTick = 0;
+    g_twilightNextPollTick = 0;
+    g_twilightPlaybackCommandGeneration.fetch_add(1);
+    g_twilightPendingPlaybackState = -1;
+    g_twilightPendingPlaybackUntilTick = 0;
     g_twilightAccessibleHost = nullptr;
     g_twilightProcessDetected = false;
     g_twilightAccessibleLastSuccessTick = 0;
@@ -6980,6 +7070,8 @@ static void FetchPlaybackInfoAsync() {
         if (g_unloading) return;
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         try {
+            uint64_t observationGeneration =
+                g_twilightPlaybackCommandGeneration.load();
             GlobalSystemMediaTransportControlsSession session{nullptr};
             { std::lock_guard<std::mutex> lk(g_sessionMtx); session = g_currentSession; }
             if (session) {
@@ -6998,13 +7090,37 @@ static void FetchPlaybackInfoAsync() {
                     }
                     auto status = info.PlaybackStatus();
                     bool playing = (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing);
+                    PlayerKind selectedPlayer = g_selectedPlayer.load();
+                    bool acceptPlaybackState = true;
+                    if (selectedPlayer == PlayerKind::TwilightEcho &&
+                        IsTwilightSession(aumid)) {
+                        acceptPlaybackState =
+                            observationGeneration ==
+                            g_twilightPlaybackCommandGeneration.load();
+                        int pendingPlaybackState =
+                            g_twilightPendingPlaybackState.load();
+                        if (acceptPlaybackState &&
+                            pendingPlaybackState >= 0) {
+                            ULONGLONG nowTick = GetTickCount64();
+                            ULONGLONG pendingUntil =
+                                g_twilightPendingPlaybackUntilTick.load();
+                            if (nowTick <= pendingUntil &&
+                                playing !=
+                                    (pendingPlaybackState != 0)) {
+                                acceptPlaybackState = false;
+                            }
+                        }
+                    }
                     bool wasPlaying = false;
                     bool committed = false;
                     {
                         std::lock_guard<std::mutex> sessionLock(g_sessionMtx);
                         if (g_currentSession && g_currentSession == session &&
-                            IsSessionForPlayer(aumid,
-                                               g_selectedPlayer.load())) {
+                            IsSessionForPlayer(aumid, selectedPlayer) &&
+                            acceptPlaybackState &&
+                            (selectedPlayer != PlayerKind::TwilightEcho ||
+                             observationGeneration ==
+                                g_twilightPlaybackCommandGeneration.load())) {
                             std::lock_guard<std::mutex> mediaLock(g_mediaMtx);
                             wasPlaying = g_media.isPlaying;
                             g_media.isPlaying = playing;
@@ -7324,6 +7440,8 @@ static DWORD WINAPI MediaThreadProc(void*) {
             if (!hasSelectedSession) {
                 g_forceSessionRefresh = true;
                 OnSessionsChanged();
+            } else {
+                FetchPlaybackInfoAsync();
             }
         }
         try { if (g_evSessionsChanged.value) g_sessionMgr.SessionsChanged(g_evSessionsChanged); } catch (...) { Wh_Log(L"MediaThreadProc: Failed to unregister SessionsChanged event"); }
@@ -7573,6 +7691,16 @@ static void UpdateVisibility();
 static void RefreshThemeColors();
 static void RemovePlayerGrid();
 static bool InjectPlayerGrid();
+static void RefreshTaskbarMediaStateNow() {
+    HWND taskbarWnd = g_taskbarWnd;
+    if (!taskbarWnd || g_unloading || g_applyingSettings) return;
+    RunFromWindowThread(taskbarWnd, [](void*) {
+        if (!g_unloading && !g_applyingSettings && g_playerGrid) {
+            RefreshPlayerContents();
+            UpdateVisibility();
+        }
+    }, nullptr);
+}
 static std::atomic<bool> g_themeChangePending{false};
 static DWORD WINAPI TimerThreadProc(void*) {
     HRESULT coInitResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -7677,8 +7805,10 @@ static DWORD WINAPI TimerThreadProc(void*) {
             twilightSelected && IsTwilightProcessRunning();
         g_twilightProcessDetected = twilightProcessRunning;
         if (!twilightProcessRunning) {
-            g_twilightLikeNextPollTick = 0;
+            g_twilightNextPollTick = 0;
             g_twilightLikeForcePollAfterTick = 0;
+            g_twilightPendingPlaybackState = -1;
+            g_twilightPendingPlaybackUntilTick = 0;
             g_twilightAccessibleLastSuccessTick = 0;
             StoreTwilightAccessiblePlayback({});
             SetTwilightLikeState(NeteaseLikeState::Unknown);
@@ -7689,47 +7819,60 @@ static DWORD WINAPI TimerThreadProc(void*) {
             ULONGLONG forceAfter = g_twilightLikeForcePollAfterTick.load();
             if (forceAfter && now >= forceAfter) {
                 g_twilightLikeForcePollAfterTick = 0;
-                g_twilightLikeNextPollTick = 0;
+                g_twilightNextPollTick = 0;
                 forceAfter = 0;
             }
+            uint64_t observationGeneration =
+                g_twilightPlaybackCommandGeneration.load();
             if ((!forceAfter || now >= forceAfter) &&
-                now >= g_twilightLikeNextPollTick.load()) {
+                now >= g_twilightNextPollTick.load()) {
                 TwilightAccessiblePlayback snapshot =
                     QueryTwilightAccessiblePlayback();
                 ULONGLONG queryFinishedAt = GetTickCount64();
-                bool snapshotChanged = false;
-                if (snapshot.reachable) {
-                    g_twilightAccessibleLastSuccessTick = queryFinishedAt;
-                    snapshotChanged =
-                        StoreTwilightAccessiblePlayback(snapshot);
-                    snapshot = GetTwilightAccessiblePlayback();
-                } else {
+                bool observationReachable = snapshot.reachable;
+                if (!snapshot.reachable) {
                     ULONGLONG lastSuccess =
                         g_twilightAccessibleLastSuccessTick.load();
                     if (lastSuccess && queryFinishedAt >= lastSuccess &&
                         queryFinishedAt - lastSuccess <= 2500) {
                         snapshot = GetTwilightAccessiblePlayback();
-                    } else {
-                        snapshotChanged =
-                            StoreTwilightAccessiblePlayback({});
                     }
                 }
-                ULONGLONG latestForceAfter =
-                    g_twilightLikeForcePollAfterTick.load();
-                if (!latestForceAfter || queryFinishedAt >= latestForceAfter) {
-                    SetTwilightLikeState(snapshot.favoriteState);
+                bool deferObservation = false;
+                int pendingPlaybackState =
+                    g_twilightPendingPlaybackState.load();
+                if (observationGeneration ==
+                        g_twilightPlaybackCommandGeneration.load() &&
+                    pendingPlaybackState >= 0) {
+                    ULONGLONG pendingUntil =
+                        g_twilightPendingPlaybackUntilTick.load();
+                    if (queryFinishedAt <= pendingUntil &&
+                        (!observationReachable ||
+                         snapshot.isPlaying !=
+                             (pendingPlaybackState != 0))) {
+                        deferObservation = true;
+                    }
                 }
-                bool hasSystemSession = false;
-                {
-                    std::lock_guard<std::mutex> lock(g_sessionMtx);
-                    hasSystemSession = static_cast<bool>(g_currentSession);
+                if (deferObservation) {
+                    g_twilightNextPollTick = queryFinishedAt + 100;
+                } else {
+                    auto committed = CommitTwilightAccessiblePlayback(
+                        snapshot, observationGeneration);
+                    if (committed.accepted) {
+                        if (observationReachable) {
+                            g_twilightAccessibleLastSuccessTick =
+                                queryFinishedAt;
+                        }
+                        ULONGLONG latestForceAfter =
+                            g_twilightLikeForcePollAfterTick.load();
+                        if (!latestForceAfter ||
+                            queryFinishedAt >= latestForceAfter) {
+                            SetTwilightLikeState(
+                                committed.state.favoriteState);
+                        }
+                        g_twilightNextPollTick = queryFinishedAt + 750;
+                    }
                 }
-                bool mediaChanged = !hasSystemSession &&
-                    ApplyTwilightAccessibleToMedia(snapshot);
-                if (snapshotChanged || mediaChanged) {
-                    DispatchMediaUpdate();
-                }
-                g_twilightLikeNextPollTick = queryFinishedAt + 750;
             }
         }
         if (wait == WAIT_OBJECT_0 + 1) {
@@ -8870,7 +9013,6 @@ static Button MakeControlButton(int cmd, bool isPlaying, winrt::Windows::UI::Col
             if (!g_unloading) {
                 try {
                     SendMediaCommandAsync(cmd);
-                    DispatchMediaUpdate();
                 } catch (...) {
                     Wh_Log(L"MakeControlButton: Exception in Click handler for cmd %d", cmd);
                 }
@@ -9053,7 +9195,6 @@ static MenuFlyoutItem MakeMediaContextMenuItem(int cmd, const wchar_t* label, bo
         if (g_unloading) return;
         try {
             SendMediaCommandAsync(cmd);
-            DispatchMediaUpdate();
         } catch (...) {}
     });
     return item;
@@ -9098,7 +9239,6 @@ static void ShowMediaContextMenu(FrameworkElement const& target) {
                 if (g_unloading) return;
                 try {
                     SendMediaCommandAsync(cmd);
-                    DispatchMediaUpdate();
                 } catch (...) {}
             });
             return ri;
@@ -9186,7 +9326,6 @@ static void ShowMediaContextMenu(FrameworkElement const& target) {
                         try {
                             if (g_shuffleEnabled.load()) {
                                 SendMediaCommandAsync(7);
-                                DispatchMediaUpdate();
                             }
                         } catch (...) {}
                     });
@@ -9208,7 +9347,6 @@ static void ShowMediaContextMenu(FrameworkElement const& target) {
                         try {
                             if (!g_shuffleEnabled.load()) {
                                 SendMediaCommandAsync(7);
-                                DispatchMediaUpdate();
                             }
                         } catch (...) {}
                     });
@@ -10212,7 +10350,6 @@ static Grid BuildMiniPlayerFlyoutContent() {
                 if (!g_unloading) {
                     try {
                         SendMediaCommandAsync(cmd);
-                        DispatchMediaUpdate();
                     } catch (...) {}
                 }
             });
@@ -10315,7 +10452,6 @@ static Grid BuildMiniPlayerFlyoutContent() {
                 }
             }
             SendMediaCommandAsync(cmd);
-            DispatchMediaUpdate();
         } catch (...) {}
     });
 
@@ -11274,7 +11410,7 @@ static Grid BuildPlayerGrid() {
                 pauseBorder.Visibility(Visibility::Collapsed);
                 Canvas::SetZIndex(pauseBorder, 8);
                 TextBlock pauseIcon;
-                pauseIcon.Text(L"");
+                pauseIcon.Text(GetGlyph(2, false));
                 pauseIcon.FontFamily(Media::FontFamily(L"Segoe MDL2 Assets"));
                 pauseIcon.FontSize((double)g_settings.pauseOverlayIconSize);
                 pauseIcon.Foreground(MakeBrush({0xFF, 0xFF, 0xFF, 0xFF}));
@@ -11346,11 +11482,9 @@ static Grid BuildPlayerGrid() {
                     if (action == L"switch_tracks") {
                         if (delta > 0) SendMediaCommandAsync(1);
                         else if (delta < 0) SendMediaCommandAsync(3);
-                        DispatchMediaUpdate();
                     } else if (action == L"switch_tracks_inverted") {
                         if (delta > 0) SendMediaCommandAsync(3);
                         else if (delta < 0) SendMediaCommandAsync(1);
-                        DispatchMediaUpdate();
                     } else if (action == L"switch_sessions") {
                         if (delta != 0) SwitchMediaSession();
                     } else if (action == L"system_sound") {
@@ -12105,11 +12239,9 @@ static Grid BuildPlayerGrid() {
             if (action == L"switch_tracks") {
                 if (delta > 0) SendMediaCommandAsync(1);
                 else if (delta < 0) SendMediaCommandAsync(3);
-                DispatchMediaUpdate();
             } else if (action == L"switch_tracks_inverted") {
                 if (delta > 0) SendMediaCommandAsync(3);
                 else if (delta < 0) SendMediaCommandAsync(1);
-                DispatchMediaUpdate();
             } else if (action == L"switch_sessions") {
                 if (delta != 0) SwitchMediaSession();
             } else if (action == L"system_sound") {
@@ -13415,7 +13547,7 @@ static void RefreshPlayerContents() {
                     bool showPause = hasSession && hasMedia && !isPlaying;
                     overlay.Visibility(showPause ? Visibility::Visible : Visibility::Collapsed);
                     if (auto pauseIcon = overlay.Child().try_as<TextBlock>()) {
-                        pauseIcon.Text(GetGlyph(2, true));
+                        pauseIcon.Text(GetGlyph(2, false));
                         bool useFluent = (g_settings.iconStyle == L"fluent_outline" || g_settings.iconStyle == L"fluent_filled");
                         pauseIcon.FontFamily(Media::FontFamily(useFluent ? L"Segoe Fluent Icons" : L"Segoe MDL2 Assets"));
                         pauseIcon.FontSize((double)g_settings.pauseOverlayIconSize);
@@ -14110,7 +14242,10 @@ BOOL Wh_ModInit() {
     g_neteaseAccessibleHost = nullptr;
     g_twilightLikeState = NeteaseLikeState::Unknown;
     g_twilightLikeForcePollAfterTick = 0;
-    g_twilightLikeNextPollTick = 0;
+    g_twilightNextPollTick = 0;
+    g_twilightPlaybackCommandGeneration = 0;
+    g_twilightPendingPlaybackState = -1;
+    g_twilightPendingPlaybackUntilTick = 0;
     g_twilightAccessibleHost = nullptr;
     g_twilightProcessDetected = false;
     g_twilightAccessibleLastSuccessTick = 0;
