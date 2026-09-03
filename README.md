@@ -42,7 +42,7 @@ Album 与播放器区域滚轮默认切换曲目，Album 点击会穿透到播�
 
 必须在网易云音乐设置中开启 SMTC，也就是“开启后播放信息同步到系统菜单栏及壁纸等第三方软件”。未开启时，本 Mod 无法稳定取得歌名、封面和播放状态，会把网易云视为没有可用媒体会话。
 
-### Twilight Echo
+### [Twilight Echo](https://github.com/asenyarzc-cpu/Twilight_Echo)
 
 - 当前按 Twilight Echo `1.1.2` 测试。
 - 建议在“设置 > 常规”中开启“原生媒体控制（SMTC）”。
@@ -150,7 +150,7 @@ Open media app is available only from the context menu. A normal left click on A
 
 SMTC must be enabled in the NetEase client. In the Chinese client this is the option that synchronizes playback information to the system media menu and third-party software. Without it, the mod cannot reliably obtain the title, artwork, or playback state and treats NetEase as having no usable media session.
 
-### Twilight Echo
+### [Twilight Echo](https://github.com/asenyarzc-cpu/Twilight_Echo)
 
 - Compatibility has been tested with Twilight Echo `1.1.2`.
 - Enabling Native media controls (SMTC) under Settings > General is recommended.
