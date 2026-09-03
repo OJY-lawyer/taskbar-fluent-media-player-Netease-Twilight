@@ -83,8 +83,9 @@ Album 与播放器区域滚轮默认切换曲目，Album 点击会穿透到播�
 
 ## 版本说明
 
-当前版本：`1.6.0-net22`
+当前版本：`1.6.0-net23`
 
+- 默认关闭暂停时的封面暂停遮罩，避免播放与暂停状态下视觉上始终存在暂停符号；中间播放按钮仍会正常切换。
 - 迷你播放器改为默认关闭，并在设置页标记已知问题。
 - 发布默认值同步维护者当前布局，并默认启用动态专辑颜色音频可视化。
 - Album 与歌词区域都可作为迷你播放器悬停区域，但不建议启用该实验功能。
@@ -190,8 +191,9 @@ All matching is performed locally. This repository contains no account credentia
 
 ## Version
 
-Current version: `1.6.0-net22`
+Current version: `1.6.0-net23`
 
+- Disables the album-art pause overlay by default so a pause symbol is not always present across both playback states; the main transport button still switches normally.
 - Disables the mini player by default and labels its known issue in settings.
 - Makes both the Album and lyric area valid hover targets for the experimental mini player.
 - Restores Twilight Echo artwork when its private image protocol is inaccessible to Explorer.

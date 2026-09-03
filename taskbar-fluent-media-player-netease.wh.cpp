@@ -5,7 +5,7 @@
 // @description     Unofficial fork for NetEase Cloud Music and Twilight Echo with taskbar controls, favorites, artwork, and synchronized lyrics.
 // @description:zh-CN 支持网易云音乐与 Twilight Echo 的播放控制、红心收藏和任务栏同步歌词。
 // @description:ru-RU Taskbar Fluent Media Player — это мод Windhawk, который интегрирует современный медиаплеер в стиле Fluent Design прямо в панель задач Windows 11. Он позволяет управлять музыкой и просматривать информацию о треке без прерывания работы.
-// @version         1.6.0-net22
+// @version         1.6.0-net23
 // @author          Salyts (original), OJY (fork)
 // @github          https://github.com/OJY-bot/taskbar-fluent-media-player-netease-twilight
 // @license         MIT
@@ -1140,7 +1140,7 @@ Salyts is the original author. The upstream visualizer includes capture and FFT 
       - "low":    "Низкое (быстрее, меньше памяти)"
       - "medium": "Среднее (по умолчанию)"
       - "high":   "Высокое (наилучшее качество)"
-    - showPauseOverlay: true
+    - showPauseOverlay: false
       $name: Show pause icon overlay on album art when paused
       $name:zh-CN: 暂停时在专辑封面上显示暂停图标
       $name:ru-RU: Показывать значок паузы на обложке при паузе
@@ -1838,7 +1838,7 @@ struct ModSettings {
     std::wstring emptyIconColor       = L"255 255 255";
     int          emptyIconOpacity     = 100;
     std::wstring albumArtQuality      = L"high";
-    bool         showPauseOverlay     = true;
+    bool         showPauseOverlay     = false;
     int          pauseOverlayIconSize = 16;
     int          pauseOverlayOpacity  = 60;
     int          albumArtMinWidth     = 32;
