@@ -1,0 +1,1535 @@
+diff --git a/src/main/app/lifecycle.ts b/src/main/app/lifecycle.ts
+index 099518d..b701688 100644
+--- a/src/main/app/lifecycle.ts
++++ b/src/main/app/lifecycle.ts
+@@ -28,6 +28,7 @@ import {
+ } from '../integrations/desktopLyrics'
+ import { restoreMainWindowFromMiniPlayer, setupMiniPlayerIpc } from '../integrations/miniPlayer'
+ import { setupTrayPlayerIpc } from '../integrations/trayPlayer'
++import { startTaskbarBridge, type TaskbarBridgeHandle } from '../integrations/taskbarBridge.ts'
+ import { setupNcmIpc } from '../ncm/api'
+ import { ensureAudioEngineRuntime, setupAudioEngineIpc } from '../audio/engineIpc'
+ import { AudioAnalysisServiceClient } from '../audioAnalysisServiceClient.ts'
+@@ -50,6 +51,8 @@ import { createWindow } from './window'
+ import { consumeAppSettingsLoadIssue, supportsNativeWindowTransparency } from '../core/settings'
+ import type { SettingsFileLoadIssue } from '../persistence/settingsFile.ts'
+ 
++let taskbarBridge: TaskbarBridgeHandle | null = null
++
+ export function startApp(): void {
+   app.setName('TwilightEcho')
+   electronApp.setAppUserModelId('com.TwilightEcho.music')
+@@ -331,6 +334,27 @@ export function startApp(): void {
+       setupDesktopLyricsIpc()
+       setupMiniPlayerIpc()
+       setupTrayPlayerIpc()
++      if (process.platform === 'win32') {
++        try {
++          taskbarBridge = await startTaskbarBridge({
++            userDataPath: app.getPath('userData'),
++            getState: () => runtime.latestMiniPlayerState,
++            dispatchCommand: (command) => {
++              const mainWindow = runtime.mainWindow
++              if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
++                return false
++              }
++              mainWindow.webContents.send('miniPlayer:command', command)
++              return true
++            }
++          })
++        } catch (error) {
++          console.warn(
++            '[taskbar-bridge] failed to start:',
++            error instanceof Error ? error.message : error
++          )
++        }
++      }
+ 
+       setupAudioEngineIpc()
+       runtime.audioAnalysisService = new AudioAnalysisServiceClient({
+@@ -403,6 +427,14 @@ export function startApp(): void {
+       runtime.loudnessAnalysisManager = null
+       runtime.pluginManager = null
+       destroyRadioMediaIpc()
++      const bridge = taskbarBridge
++      taskbarBridge = null
++      void bridge?.close().catch((error) => {
++        console.warn(
++          '[taskbar-bridge] failed to close:',
++          error instanceof Error ? error.message : error
++        )
++      })
+       void destroyRemoteIpc()
+       if (runtime.ncmServer) {
+         runtime.ncmServer.close()
+diff --git a/src/main/integrations/taskbarBridge.test.ts b/src/main/integrations/taskbarBridge.test.ts
+new file mode 100644
+index 0000000..a02753f
+--- /dev/null
++++ b/src/main/integrations/taskbarBridge.test.ts
+@@ -0,0 +1,446 @@
++import assert from 'node:assert/strict'
++import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import test from 'node:test'
++import { EMPTY_MINI_PLAYER_STATE } from '../../shared/miniPlayer.ts'
++import { startTaskbarBridge } from './taskbarBridge.ts'
++
++test('taskbar bridge writes discovery and protects health with local bearer access', async (t) => {
++  const userDataPath = await mkdtemp(join(tmpdir(), 'twilight-taskbar-bridge-'))
++  t.after(() => rm(userDataPath, { recursive: true, force: true }))
++
++  const bridge = await startTaskbarBridge({
++    userDataPath,
++    getState: () => null,
++    dispatchCommand: () => false
++  })
++  t.after(() => bridge.close())
++
++  const discoveryPath = join(userDataPath, 'taskbar-bridge.json')
++  const discovery = JSON.parse(await readFile(discoveryPath, 'utf8'))
++  assert.equal(discovery.bridgeVersion, 1)
++  assert.equal(discovery.host, '127.0.0.1')
++  assert.equal(discovery.port, bridge.port)
++  assert.equal(discovery.baseUrl, `http://127.0.0.1:${bridge.port}/taskbar/v1`)
++  assert.equal(discovery.token, bridge.token)
++  assert.equal(discovery.instanceId, bridge.instanceId)
++  assert.ok(discovery.port > 0)
++  assert.ok(discovery.token.length >= 32)
++  assert.ok(discovery.instanceId.length >= 32)
++
++  const healthUrl = `http://127.0.0.1:${bridge.port}/taskbar/v1/health`
++  assert.equal((await fetch(healthUrl)).status, 401)
++  assert.equal(
++    (
++      await fetch(healthUrl, {
++        headers: {
++          authorization: `Bearer ${bridge.token}`,
++          origin: 'http://127.0.0.1'
++        }
++      })
++    ).status,
++    403
++  )
++
++  const response = await fetch(healthUrl, {
++    headers: { authorization: `Bearer ${bridge.token}` }
++  })
++  assert.equal(response.status, 200)
++  assert.deepEqual(await response.json(), {
++    bridgeVersion: 1,
++    instanceId: bridge.instanceId,
++    status: 'ok'
++  })
++
++  await bridge.close()
++  await assert.rejects(stat(discoveryPath), { code: 'ENOENT' })
++})
++
++test('state projects the authoritative player snapshot and advances timed lyrics', async (t) => {
++  const userDataPath = await mkdtemp(join(tmpdir(), 'twilight-taskbar-state-'))
++  t.after(() => rm(userDataPath, { recursive: true, force: true }))
++  let nowMs = 1_000
++  const state = {
++    ...EMPTY_MINI_PLAYER_STATE,
++    track: {
++      id: 'ncm:42',
++      providerId: 'ncm',
++      title: 'Nightfall',
++      artist: 'Twilight Echo',
++      album: 'Bridge',
++      cover: 'twilight-media://image/42',
++      format: 'FLAC',
++      sampleRate: 96_000,
++      bitDepth: 24,
++      coverSource: 'https://example.test/42.jpg'
++    },
++    currentLyric: { original: 'first line', translation: 'first translation' },
++    lyrics: [
++      { time: 0, original: 'first line', translation: 'first translation' },
++      { time: 10, original: 'second line', translation: 'second translation' }
++    ],
++    isPlaying: true,
++    isLoading: false,
++    currentTime: 5,
++    duration: 60,
++    favoriteAvailable: true,
++    favoriteLiked: false,
++    favoriteLoading: false
++  }
++  const bridge = await startTaskbarBridge({
++    userDataPath,
++    getState: () => state,
++    dispatchCommand: () => false,
++    nowMs: () => nowMs
++  })
++  t.after(() => bridge.close())
++  const readState = () =>
++    fetch(`http://127.0.0.1:${bridge.port}/taskbar/v1/state`, {
++      headers: { authorization: `Bearer ${bridge.token}` }
++    })
++
++  const firstResponse = await readState()
++  assert.equal(firstResponse.status, 200)
++  assert.deepEqual(await firstResponse.json(), {
++    bridgeVersion: 1,
++    instanceId: bridge.instanceId,
++    revision: 1,
++    track: {
++      id: 'ncm:42',
++      providerId: 'ncm',
++      title: 'Nightfall',
++      artist: 'Twilight Echo',
++      album: 'Bridge',
++      cover: 'twilight-media://image/42',
++      coverSource: 'https://example.test/42.jpg'
++    },
++    currentLyric: { original: 'first line', translation: 'first translation' },
++    isPlaying: true,
++    isLoading: false,
++    currentTime: 5,
++    duration: 60,
++    favoriteAvailable: true,
++    favoriteLiked: false,
++    favoriteLoading: false
++  })
++
++  nowMs = 7_000
++  const advanced = await readState()
++  assert.equal(advanced.status, 200)
++  const advancedState = await advanced.json()
++  assert.equal(advancedState.revision, 2)
++  assert.equal(advancedState.currentTime, 11)
++  assert.deepEqual(advancedState.currentLyric, {
++    original: 'second line',
++    translation: 'second translation'
++  })
++})
++
++test('state hides favorite status for local and other provider tracks', async (t) => {
++  const userDataPath = await mkdtemp(join(tmpdir(), 'twilight-taskbar-provider-state-'))
++  t.after(() => rm(userDataPath, { recursive: true, force: true }))
++  let providerId = 'local'
++  const bridge = await startTaskbarBridge({
++    userDataPath,
++    getState: () => ({
++      ...EMPTY_MINI_PLAYER_STATE,
++      track: {
++        id: `${providerId}:42`,
++        providerId,
++        title: 'Not NetEase',
++        artist: 'Provider',
++        album: '',
++        cover: null,
++        format: null,
++        sampleRate: null,
++        bitDepth: null,
++        coverSource: null
++      },
++      favoriteAvailable: true,
++      favoriteLiked: true,
++      favoriteLoading: true
++    }),
++    dispatchCommand: () => false
++  })
++  t.after(() => bridge.close())
++  const readState = async () => {
++    const response = await fetch(`http://127.0.0.1:${bridge.port}/taskbar/v1/state`, {
++      headers: { authorization: `Bearer ${bridge.token}` }
++    })
++    assert.equal(response.status, 200)
++    return response.json()
++  }
++
++  for (const source of ['local', 'qq']) {
++    providerId = source
++    const state = await readState()
++    assert.equal(state.track.providerId, source)
++    assert.equal(state.favoriteAvailable, false)
++    assert.equal(state.favoriteLiked, false)
++    assert.equal(state.favoriteLoading, false)
++  }
++})
++
++test('set-favorite rejects local and other provider tracks before dispatch', async (t) => {
++  const userDataPath = await mkdtemp(join(tmpdir(), 'twilight-taskbar-provider-command-'))
++  t.after(() => rm(userDataPath, { recursive: true, force: true }))
++  let providerId = 'local'
++  let dispatchCount = 0
++  const bridge = await startTaskbarBridge({
++    userDataPath,
++    getState: () => ({
++      ...EMPTY_MINI_PLAYER_STATE,
++      track: {
++        id: `${providerId}:42`,
++        providerId,
++        title: 'Not NetEase',
++        artist: 'Provider',
++        album: '',
++        cover: null,
++        format: null,
++        sampleRate: null,
++        bitDepth: null,
++        coverSource: null
++      },
++      favoriteAvailable: true
++    }),
++    dispatchCommand: () => {
++      dispatchCount += 1
++      return true
++    }
++  })
++  t.after(() => bridge.close())
++
++  for (const source of ['local', 'qq']) {
++    providerId = source
++    const requestId = `reject-${source}`
++    const response = await fetch(`http://127.0.0.1:${bridge.port}/taskbar/v1/command`, {
++      method: 'POST',
++      headers: {
++        authorization: `Bearer ${bridge.token}`,
++        'content-type': 'application/json'
++      },
++      body: JSON.stringify({
++        type: 'set-favorite',
++        liked: true,
++        expectedTrackId: `${source}:42`,
++        requestId
++      })
++    })
++    assert.equal(response.status, 503)
++    assert.deepEqual(await response.json(), { error: 'favorite_unavailable', requestId })
++  }
++  assert.equal(dispatchCount, 0)
++})
++
++test('command accepts only the supported playback controls', async (t) => {
++  const userDataPath = await mkdtemp(join(tmpdir(), 'twilight-taskbar-command-'))
++  t.after(() => rm(userDataPath, { recursive: true, force: true }))
++  const commands: unknown[] = []
++  const bridge = await startTaskbarBridge({
++    userDataPath,
++    getState: () => null,
++    dispatchCommand: (command) => {
++      commands.push(command)
++      return true
++    }
++  })
++  t.after(() => bridge.close())
++  const commandUrl = `http://127.0.0.1:${bridge.port}/taskbar/v1/command`
++  const send = (body: unknown) =>
++    fetch(commandUrl, {
++      method: 'POST',
++      headers: {
++        authorization: `Bearer ${bridge.token}`,
++        'content-type': 'application/json'
++      },
++      body: JSON.stringify(body)
++    })
++
++  for (const type of ['toggle-play', 'previous', 'next']) {
++    const response = await send({ type })
++    assert.equal(response.status, 200)
++    assert.deepEqual(await response.json(), { ok: true, status: 'accepted' })
++  }
++  assert.deepEqual(commands, [{ type: 'toggle-play' }, { type: 'previous' }, { type: 'next' }])
++
++  const invalid = await send({ type: 'seek', value: 12 })
++  assert.equal(invalid.status, 400)
++  assert.deepEqual(await invalid.json(), { error: 'invalid_command' })
++  assert.equal(commands.length, 3)
++})
++
++test('set-favorite waits for authoritative state and is idempotent by request id', async (t) => {
++  const userDataPath = await mkdtemp(join(tmpdir(), 'twilight-taskbar-favorite-'))
++  t.after(() => rm(userDataPath, { recursive: true, force: true }))
++  let state = {
++    ...EMPTY_MINI_PLAYER_STATE,
++    track: {
++      id: 'ncm:42',
++      providerId: 'ncm',
++      title: 'Nightfall',
++      artist: 'Twilight Echo',
++      album: 'Bridge',
++      cover: null,
++      format: null,
++      sampleRate: null,
++      bitDepth: null,
++      coverSource: null
++    },
++    favoriteAvailable: true,
++    favoriteLiked: false,
++    favoriteLoading: false
++  }
++  let toggleCount = 0
++  const bridge = await startTaskbarBridge({
++    userDataPath,
++    getState: () => state,
++    dispatchCommand: (command) => {
++      assert.deepEqual(command, {
++        type: 'set-favorite',
++        liked: true,
++        expectedTrackId: 'ncm:42',
++        requestId: 'like-1'
++      })
++      toggleCount += 1
++      state = { ...state, favoriteLoading: true }
++      setTimeout(() => {
++        state = { ...state, favoriteLiked: true, favoriteLoading: false }
++      }, 15)
++      return true
++    },
++    favoritePollIntervalMs: 5,
++    favoriteTimeoutMs: 100
++  })
++  t.after(() => bridge.close())
++  const commandUrl = `http://127.0.0.1:${bridge.port}/taskbar/v1/command`
++  const sendFavorite = (requestId: string) =>
++    fetch(commandUrl, {
++      method: 'POST',
++      headers: {
++        authorization: `Bearer ${bridge.token}`,
++        'content-type': 'application/json'
++      },
++      body: JSON.stringify({
++        type: 'set-favorite',
++        liked: true,
++        expectedTrackId: 'ncm:42',
++        requestId
++      })
++    })
++
++  const [confirmed, repeated] = await Promise.all([sendFavorite('like-1'), sendFavorite('like-1')])
++  assert.equal(confirmed.status, 200)
++  assert.deepEqual(await confirmed.json(), {
++    ok: true,
++    status: 'confirmed',
++    confirmed: true,
++    requestId: 'like-1',
++    trackId: 'ncm:42',
++    liked: true
++  })
++  assert.equal(toggleCount, 1)
++
++  assert.equal(repeated.status, 200)
++  assert.equal((await repeated.json()).status, 'confirmed')
++  assert.equal(toggleCount, 1)
++
++  const noop = await sendFavorite('like-2')
++  assert.equal(noop.status, 200)
++  assert.deepEqual(await noop.json(), {
++    ok: true,
++    status: 'noop',
++    confirmed: true,
++    requestId: 'like-2',
++    trackId: 'ncm:42',
++    liked: true
++  })
++  assert.equal(toggleCount, 1)
++})
++
++test('set-favorite rejects stale tracks and reports unconfirmed outcomes without guessing', async (t) => {
++  const userDataPath = await mkdtemp(join(tmpdir(), 'twilight-taskbar-favorite-failure-'))
++  t.after(() => rm(userDataPath, { recursive: true, force: true }))
++  let state = {
++    ...EMPTY_MINI_PLAYER_STATE,
++    track: {
++      id: 'ncm:42',
++      providerId: 'ncm',
++      title: 'Nightfall',
++      artist: 'Twilight Echo',
++      album: 'Bridge',
++      cover: null,
++      format: null,
++      sampleRate: null,
++      bitDepth: null,
++      coverSource: null
++    },
++    favoriteAvailable: true,
++    favoriteLiked: false,
++    favoriteLoading: false
++  }
++  let behavior: 'not-applied' | 'timeout' = 'not-applied'
++  let toggleCount = 0
++  const bridge = await startTaskbarBridge({
++    userDataPath,
++    getState: () => state,
++    dispatchCommand: () => {
++      toggleCount += 1
++      state = { ...state, favoriteLoading: true }
++      if (behavior === 'not-applied') {
++        setTimeout(() => {
++          state = { ...state, favoriteLoading: false }
++        }, 10)
++      }
++      return true
++    },
++    favoritePollIntervalMs: 5,
++    favoriteTimeoutMs: 30
++  })
++  t.after(() => bridge.close())
++  const commandUrl = `http://127.0.0.1:${bridge.port}/taskbar/v1/command`
++  const sendFavorite = (requestId: string, expectedTrackId = 'ncm:42') =>
++    fetch(commandUrl, {
++      method: 'POST',
++      headers: {
++        authorization: `Bearer ${bridge.token}`,
++        'content-type': 'application/json'
++      },
++      body: JSON.stringify({
++        type: 'set-favorite',
++        liked: true,
++        expectedTrackId,
++        requestId
++      })
++    })
++
++  const stale = await sendFavorite('stale-1', 'ncm:99')
++  assert.equal(stale.status, 409)
++  assert.deepEqual(await stale.json(), { error: 'track_changed', requestId: 'stale-1' })
++  assert.equal(toggleCount, 0)
++
++  const notApplied = await sendFavorite('failed-1')
++  assert.equal(notApplied.status, 409)
++  assert.deepEqual(await notApplied.json(), {
++    error: 'favorite_not_applied',
++    requestId: 'failed-1',
++    trackId: 'ncm:42',
++    liked: false
++  })
++  assert.equal(toggleCount, 1)
++
++  behavior = 'timeout'
++  state = { ...state, favoriteLoading: false }
++  const pending = await sendFavorite('pending-1')
++  assert.equal(pending.status, 202)
++  assert.deepEqual(await pending.json(), {
++    ok: true,
++    status: 'pending',
++    confirmed: false,
++    requestId: 'pending-1',
++    trackId: 'ncm:42',
++    liked: true
++  })
++  assert.equal(toggleCount, 2)
++})
+diff --git a/src/main/integrations/taskbarBridge.ts b/src/main/integrations/taskbarBridge.ts
+new file mode 100644
+index 0000000..4521741
+--- /dev/null
++++ b/src/main/integrations/taskbarBridge.ts
+@@ -0,0 +1,461 @@
++import { randomBytes, randomUUID } from 'node:crypto'
++import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
++import type { AddressInfo } from 'node:net'
++import { join } from 'node:path'
++import {
++  clearJsonFileArtifacts,
++  writeJsonFileAtomic,
++  type JsonFileOptions
++} from '../persistence/jsonFile.ts'
++import {
++  EMPTY_MINI_PLAYER_STATE,
++  normalizeMiniPlayerCommand,
++  type MiniPlayerCommand,
++  type MiniPlayerStateSnapshot
++} from '../../shared/miniPlayer.ts'
++
++const TASKBAR_BRIDGE_HOST = '127.0.0.1'
++const TASKBAR_BRIDGE_VERSION = 1
++const TASKBAR_BRIDGE_FILE = 'taskbar-bridge.json'
++
++interface TaskbarBridgeDiscovery {
++  bridgeVersion: 1
++  host: typeof TASKBAR_BRIDGE_HOST
++  port: number
++  baseUrl: string
++  token: string
++  instanceId: string
++  pid: number
++}
++
++const TASKBAR_BRIDGE_DISCOVERY_OPTIONS: JsonFileOptions<TaskbarBridgeDiscovery> = {
++  label: 'taskbar bridge discovery',
++  maxBytes: 4096,
++  validate: (value): value is TaskbarBridgeDiscovery => {
++    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
++    const record = value as Record<string, unknown>
++    return (
++      record.bridgeVersion === TASKBAR_BRIDGE_VERSION &&
++      record.host === TASKBAR_BRIDGE_HOST &&
++      typeof record.port === 'number' &&
++      Number.isInteger(record.port) &&
++      record.port > 0 &&
++      typeof record.baseUrl === 'string' &&
++      record.baseUrl === `http://${TASKBAR_BRIDGE_HOST}:${record.port as number}/taskbar/v1` &&
++      typeof record.token === 'string' &&
++      record.token.length >= 32 &&
++      typeof record.instanceId === 'string' &&
++      record.instanceId.length >= 32 &&
++      typeof record.pid === 'number' &&
++      Number.isInteger(record.pid) &&
++      record.pid > 0
++    )
++  }
++}
++
++export interface TaskbarBridgeDependencies {
++  userDataPath: string
++  getState: () => MiniPlayerStateSnapshot | null
++  dispatchCommand: (command: MiniPlayerCommand) => boolean
++  nowMs?: () => number
++  favoritePollIntervalMs?: number
++  favoriteTimeoutMs?: number
++}
++
++export interface TaskbarBridgeHandle {
++  port: number
++  token: string
++  instanceId: string
++  discoveryPath: string
++  close: () => Promise<void>
++}
++
++interface TaskbarPlaybackClock {
++  trackId: string | null
++  sourceTime: number
++  observedAtMs: number
++  wasAdvancing: boolean
++}
++
++function advancePlaybackTime(
++  state: MiniPlayerStateSnapshot,
++  clock: TaskbarPlaybackClock,
++  nowMs: number
++): number {
++  const trackId = state.track?.id ?? null
++  const sourceTime = Number.isFinite(state.currentTime) ? Math.max(0, state.currentTime) : 0
++  const advancing = state.isPlaying && !state.isLoading && trackId !== null
++  if (
++    clock.trackId !== trackId ||
++    clock.sourceTime !== sourceTime ||
++    clock.wasAdvancing !== advancing
++  ) {
++    clock.trackId = trackId
++    clock.sourceTime = sourceTime
++    clock.observedAtMs = nowMs
++    clock.wasAdvancing = advancing
++  }
++  const elapsed = advancing ? Math.max(0, nowMs - clock.observedAtMs) / 1000 : 0
++  const advanced = sourceTime + elapsed
++  return state.duration > 0 ? Math.min(state.duration, advanced) : advanced
++}
++
++function lyricAtTime(
++  state: MiniPlayerStateSnapshot,
++  currentTime: number
++): MiniPlayerStateSnapshot['currentLyric'] {
++  let active = -1
++  for (let i = 0; i < state.lyrics.length; i += 1) {
++    const time = state.lyrics[i].time
++    if (time == null || time > currentTime) break
++    active = i
++  }
++  if (active < 0) return state.currentLyric
++  const line = state.lyrics[active]
++  return { original: line.original, translation: line.translation }
++}
++
++function selectTaskbarState(
++  state: MiniPlayerStateSnapshot | null,
++  clock: TaskbarPlaybackClock,
++  nowMs: number
++) {
++  const source = state ?? EMPTY_MINI_PLAYER_STATE
++  const currentTime = advancePlaybackTime(source, clock, nowMs)
++  const favoriteAllowed = source.track?.providerId === 'ncm'
++  return {
++    track: source.track
++      ? {
++          id: source.track.id,
++          providerId: source.track.providerId,
++          title: source.track.title,
++          artist: source.track.artist,
++          album: source.track.album,
++          cover: source.track.cover,
++          coverSource: source.track.coverSource
++        }
++      : null,
++    currentLyric: lyricAtTime(source, currentTime),
++    isPlaying: source.isPlaying,
++    isLoading: source.isLoading,
++    currentTime,
++    duration: source.duration,
++    favoriteAvailable: favoriteAllowed && source.favoriteAvailable,
++    favoriteLiked: favoriteAllowed && source.favoriteLiked,
++    favoriteLoading: favoriteAllowed && source.favoriteLoading
++  }
++}
++
++function writeJson(response: ServerResponse, status: number, value: unknown): void {
++  response.writeHead(status, {
++    'content-type': 'application/json; charset=utf-8',
++    'cache-control': 'no-store'
++  })
++  response.end(JSON.stringify(value))
++}
++
++function authorizeRequest(
++  request: IncomingMessage,
++  response: ServerResponse,
++  token: string
++): boolean {
++  if (request.headers.origin !== undefined) {
++    writeJson(response, 403, { error: 'origin_not_allowed' })
++    return false
++  }
++  if (request.headers.authorization !== `Bearer ${token}`) {
++    response.setHeader('www-authenticate', 'Bearer')
++    writeJson(response, 401, { error: 'unauthorized' })
++    return false
++  }
++  return true
++}
++
++function readRequestBody(request: IncomingMessage): Promise<string> {
++  return new Promise((resolve, reject) => {
++    let body = ''
++    request.setEncoding('utf8')
++    request.on('data', (chunk: string) => {
++      body += chunk
++      if (body.length > 16 * 1024) reject(new Error('request_too_large'))
++    })
++    request.on('end', () => resolve(body))
++    request.on('error', reject)
++  })
++}
++
++type SetFavoriteCommand = Extract<MiniPlayerCommand, { type: 'set-favorite' }>
++
++interface CommandResponse {
++  statusCode: number
++  body: Record<string, unknown>
++}
++
++function wait(delayMs: number): Promise<void> {
++  return new Promise((resolve) => setTimeout(resolve, delayMs))
++}
++
++function favoriteResult(
++  command: SetFavoriteCommand,
++  status: 'confirmed' | 'noop' | 'pending',
++  confirmed: boolean
++): CommandResponse {
++  return {
++    statusCode: status === 'pending' ? 202 : 200,
++    body: {
++      ok: true,
++      status,
++      confirmed,
++      requestId: command.requestId,
++      trackId: command.expectedTrackId,
++      liked: command.liked
++    }
++  }
++}
++
++function createCommandRequestHandler(dependencies: TaskbarBridgeDependencies) {
++  const favoriteRequests = new Map<
++    string,
++    { signature: string; result: Promise<CommandResponse> }
++  >()
++  let favoriteCommandInFlight = false
++  const pollIntervalMs = Math.max(1, dependencies.favoritePollIntervalMs ?? 75)
++  const maxPolls = Math.max(1, Math.ceil((dependencies.favoriteTimeoutMs ?? 4500) / pollIntervalMs))
++
++  async function executeFavorite(command: SetFavoriteCommand): Promise<CommandResponse> {
++    const initial = dependencies.getState()
++    if (!initial?.track || initial.track.id !== command.expectedTrackId) {
++      return {
++        statusCode: 409,
++        body: { error: 'track_changed', requestId: command.requestId }
++      }
++    }
++    if (initial.track.providerId !== 'ncm' || !initial.favoriteAvailable) {
++      return {
++        statusCode: 503,
++        body: { error: 'favorite_unavailable', requestId: command.requestId }
++      }
++    }
++    if (initial.favoriteLoading || favoriteCommandInFlight) {
++      return {
++        statusCode: 409,
++        body: { error: 'favorite_busy', requestId: command.requestId }
++      }
++    }
++    if (initial.favoriteLiked === command.liked) {
++      return favoriteResult(command, 'noop', true)
++    }
++
++    favoriteCommandInFlight = true
++    try {
++      if (!dependencies.dispatchCommand(command)) {
++        return {
++          statusCode: 503,
++          body: { error: 'player_unavailable', requestId: command.requestId }
++        }
++      }
++
++      let sawLoading = false
++      for (let attempt = 0; attempt < maxPolls; attempt += 1) {
++        await wait(pollIntervalMs)
++        const current = dependencies.getState()
++        if (
++          !current?.track ||
++          current.track.id !== command.expectedTrackId ||
++          current.track.providerId !== 'ncm'
++        ) {
++          return {
++            statusCode: 409,
++            body: { error: 'track_changed', requestId: command.requestId }
++          }
++        }
++        if (current.favoriteLoading) {
++          sawLoading = true
++          continue
++        }
++        if (current.favoriteLiked === command.liked) {
++          return favoriteResult(command, 'confirmed', true)
++        }
++        if (sawLoading) {
++          return {
++            statusCode: 409,
++            body: {
++              error: 'favorite_not_applied',
++              requestId: command.requestId,
++              trackId: command.expectedTrackId,
++              liked: current.favoriteLiked
++            }
++          }
++        }
++      }
++      return favoriteResult(command, 'pending', false)
++    } finally {
++      favoriteCommandInFlight = false
++    }
++  }
++
++  function rememberFavoriteRequest(command: SetFavoriteCommand): Promise<CommandResponse> {
++    const signature = JSON.stringify(command)
++    const existing = favoriteRequests.get(command.requestId)
++    if (existing) {
++      return existing.signature === signature
++        ? existing.result
++        : Promise.resolve({
++            statusCode: 409,
++            body: { error: 'request_id_conflict', requestId: command.requestId }
++          })
++    }
++    const result = executeFavorite(command)
++    favoriteRequests.set(command.requestId, { signature, result })
++    if (favoriteRequests.size > 128) {
++      favoriteRequests.delete(favoriteRequests.keys().next().value as string)
++    }
++    return result
++  }
++
++  return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
++    try {
++      const raw = JSON.parse(await readRequestBody(request))
++      const command = normalizeMiniPlayerCommand(raw)
++      if (
++        command?.type === 'toggle-play' ||
++        command?.type === 'previous' ||
++        command?.type === 'next'
++      ) {
++        if (!dependencies.dispatchCommand(command)) {
++          writeJson(response, 503, { error: 'player_unavailable' })
++          return
++        }
++        writeJson(response, 200, { ok: true, status: 'accepted' })
++        return
++      }
++
++      if (command?.type !== 'set-favorite') {
++        writeJson(response, 400, { error: 'invalid_command' })
++        return
++      }
++      const result = await rememberFavoriteRequest(command)
++      writeJson(response, result.statusCode, result.body)
++    } catch (error) {
++      const tooLarge = error instanceof Error && error.message === 'request_too_large'
++      writeJson(response, tooLarge ? 413 : 400, {
++        error: tooLarge ? 'request_too_large' : 'invalid_json'
++      })
++    }
++  }
++}
++
++function createTaskbarBridgeServer(
++  dependencies: TaskbarBridgeDependencies,
++  token: string,
++  instanceId: string
++): Server {
++  const clock: TaskbarPlaybackClock = {
++    trackId: null,
++    sourceTime: 0,
++    observedAtMs: 0,
++    wasAdvancing: false
++  }
++  const nowMs = dependencies.nowMs ?? Date.now
++  const handleCommandRequest = createCommandRequestHandler(dependencies)
++  let revision = 0
++  let lastStateSignature = ''
++  return createServer((request, response) => {
++    if (!authorizeRequest(request, response, token)) return
++    const path = request.url?.split('?', 1)[0] ?? '/'
++    if (request.method === 'GET' && path === '/taskbar/v1/health') {
++      writeJson(response, 200, {
++        bridgeVersion: TASKBAR_BRIDGE_VERSION,
++        instanceId,
++        status: 'ok'
++      })
++      return
++    }
++    if (request.method === 'GET' && path === '/taskbar/v1/state') {
++      const projected = selectTaskbarState(dependencies.getState(), clock, nowMs())
++      const signature = JSON.stringify(projected)
++      if (signature !== lastStateSignature) {
++        lastStateSignature = signature
++        revision += 1
++      }
++      writeJson(response, 200, {
++        bridgeVersion: TASKBAR_BRIDGE_VERSION,
++        instanceId,
++        revision,
++        ...projected
++      })
++      return
++    }
++    if (request.method === 'POST' && path === '/taskbar/v1/command') {
++      void handleCommandRequest(request, response)
++      return
++    }
++
++    writeJson(response, 404, { error: 'not_found' })
++  })
++}
++
++function listen(server: Server): Promise<number> {
++  return new Promise((resolve, reject) => {
++    const onError = (error: Error): void => reject(error)
++    server.once('error', onError)
++    server.listen(0, TASKBAR_BRIDGE_HOST, () => {
++      server.off('error', onError)
++      resolve((server.address() as AddressInfo).port)
++    })
++  })
++}
++
++function closeServer(server: Server): Promise<void> {
++  if (!server.listening) return Promise.resolve()
++  return new Promise((resolve, reject) => {
++    server.close((error) => (error ? reject(error) : resolve()))
++  })
++}
++
++export async function startTaskbarBridge(
++  dependencies: TaskbarBridgeDependencies
++): Promise<TaskbarBridgeHandle> {
++  const token = randomBytes(32).toString('hex')
++  const instanceId = randomUUID()
++  const server = createTaskbarBridgeServer(dependencies, token, instanceId)
++  const port = await listen(server)
++  const discoveryPath = join(dependencies.userDataPath, TASKBAR_BRIDGE_FILE)
++  const baseUrl = `http://${TASKBAR_BRIDGE_HOST}:${port}/taskbar/v1`
++  const discovery: TaskbarBridgeDiscovery = {
++    bridgeVersion: TASKBAR_BRIDGE_VERSION,
++    host: TASKBAR_BRIDGE_HOST,
++    port,
++    baseUrl,
++    token,
++    instanceId,
++    pid: process.pid
++  }
++
++  try {
++    writeJsonFileAtomic(
++      discoveryPath,
++      JSON.stringify(discovery),
++      TASKBAR_BRIDGE_DISCOVERY_OPTIONS,
++      discovery
++    )
++  } catch (error) {
++    await closeServer(server)
++    throw error
++  }
++
++  server.unref()
++  let closePromise: Promise<void> | null = null
++  return {
++    port,
++    token,
++    instanceId,
++    discoveryPath,
++    close: () => {
++      if (closePromise) return closePromise
++      clearJsonFileArtifacts(discoveryPath)
++      closePromise = closeServer(server)
++      return closePromise
++    }
++  }
++}
+diff --git a/src/preload/index.d.ts b/src/preload/index.d.ts
+index 61d3cd4..189e4c6 100644
+--- a/src/preload/index.d.ts
++++ b/src/preload/index.d.ts
+@@ -359,6 +359,7 @@ interface MiniPlayerSettings {
+ 
+ interface MiniPlayerTrackSnapshot {
+   id: string
++  providerId: string | null
+   title: string
+   artist: string
+   album: string
+@@ -400,6 +401,12 @@ type MiniPlayerCommand =
+   | { type: 'cycle-play-mode' }
+   | { type: 'set-play-mode'; value: PlayMode }
+   | { type: 'toggle-favorite' }
++  | {
++      type: 'set-favorite'
++      liked: boolean
++      expectedTrackId: string
++      requestId: string
++    }
+   | { type: 'seek'; value: number }
+   | { type: 'set-volume'; value: number }
+ 
+diff --git a/src/renderer/src/App.vue b/src/renderer/src/App.vue
+index d4b9145..3dd3a5a 100644
+--- a/src/renderer/src/App.vue
++++ b/src/renderer/src/App.vue
+@@ -359,8 +359,13 @@ function handlePlayerBarArtistClick(): void {
+   enterStreamingMode()
+ }
+ 
+-const { favoriteButtonVisible, favoriteButtonLiked, favoriteButtonLoading, toggleFavorite } =
+-  useFavoriteButton({
++const {
++  favoriteButtonVisible,
++  favoriteButtonLiked,
++  favoriteButtonLoading,
++  favoriteButtonTitle,
++  toggleFavorite
++} = useFavoriteButton({
+     currentTrack,
+     playlists: musicStore.localPlaylists,
+     mediaProviders,
+@@ -939,6 +944,11 @@ useLiquidGlassEnvironment({
+         :mode="playerBarPresentation.mode"
+         :auto-hide="playerBarPresentation.autoHide"
+         :hidden-bar="playerBarPresentation.hidden"
++        :favorite-button-visible="favoriteButtonVisible"
++        :favorite-button-liked="favoriteButtonLiked"
++        :favorite-button-loading="favoriteButtonLoading"
++        :favorite-button-title="favoriteButtonTitle"
++        :toggle-favorite="toggleFavorite"
+         @exit-playing-page="handleExitPlayingPage"
+         @click-cover="handleCoverClick"
+         @open-settings="openPlaybackSettings"
+diff --git a/src/renderer/src/app/useMiniPlayerSync.test.ts b/src/renderer/src/app/useMiniPlayerSync.test.ts
+index 4281285..a2ee5b6 100644
+--- a/src/renderer/src/app/useMiniPlayerSync.test.ts
++++ b/src/renderer/src/app/useMiniPlayerSync.test.ts
+@@ -1,7 +1,9 @@
+ import assert from 'node:assert/strict'
+ import test from 'node:test'
++import { ref } from 'vue'
+ import {
+   buildMiniPlayerStateSnapshot,
++  dispatchSetFavoriteCommand,
+   findActiveMiniPlayerLyricIndex,
+   resolveCurrentLyricForMiniPlayer
+ } from './useMiniPlayerSync.ts'
+@@ -52,6 +54,26 @@ test('mini player snapshot carries the lyric line active at the snapshot time',
+   assert.equal(snapshot.track?.format, 'FLAC')
+   assert.equal(snapshot.track?.sampleRate, 192000)
+   assert.equal(snapshot.track?.bitDepth, 24)
++  assert.equal(snapshot.track?.providerId, 'ncm')
++})
++
++test('mini player snapshot identifies local and other provider tracks', () => {
++  const local = buildMiniPlayerStateSnapshot(
++    makeSource(
++      makeTrack({
++        id: 'D:\\Music\\local.flac',
++        filePath: 'D:\\Music\\local.flac',
++        source: 'local'
++      }),
++      0
++    )
++  )
++  assert.equal(local.track?.providerId, 'local')
++
++  const other = buildMiniPlayerStateSnapshot(
++    makeSource(makeTrack({ id: 'qq:42', filePath: 'qq:42', source: 'qq' }), 0)
++  )
++  assert.equal(other.track?.providerId, 'qq')
+ })
+ 
+ test('mini player snapshot keeps quality fields null when the track has none', () => {
+@@ -120,3 +142,100 @@ test('mini player lyric index picks the latest line at or before current time',
+   assert.equal(findActiveMiniPlayerLyricIndex(lines, 99), 2)
+   assert.equal(findActiveMiniPlayerLyricIndex([], 5), -1)
+ })
++
++test('set-favorite checks track and authoritative state before toggling', () => {
++  const currentTrack = ref<Track | null>(makeTrack({ id: 'ncm:42' }))
++  const favoriteAvailable = ref(true)
++  const favoriteLoading = ref(false)
++  const favoriteLiked = ref(false)
++  let toggleCount = 0
++  const target = {
++    currentTrack,
++    favoriteAvailable,
++    favoriteLoading,
++    favoriteLiked,
++    toggleFavorite: async () => {
++      toggleCount += 1
++    }
++  }
++
++  assert.equal(
++    dispatchSetFavoriteCommand(
++      {
++        type: 'set-favorite',
++        liked: true,
++        expectedTrackId: 'ncm:99',
++        requestId: 'wrong-track'
++      },
++      target
++    ),
++    false
++  )
++  assert.equal(toggleCount, 0)
++
++  currentTrack.value = makeTrack({
++    id: 'D:\\Music\\local.flac',
++    filePath: 'D:\\Music\\local.flac',
++    source: 'local'
++  })
++  favoriteLiked.value = false
++  assert.equal(
++    dispatchSetFavoriteCommand(
++      {
++        type: 'set-favorite',
++        liked: true,
++        expectedTrackId: 'D:\\Music\\local.flac',
++        requestId: 'local-track'
++      },
++      target
++    ),
++    false
++  )
++  assert.equal(toggleCount, 0)
++
++  currentTrack.value = makeTrack({ id: 'qq:42', filePath: 'qq:42', source: 'qq' })
++  assert.equal(
++    dispatchSetFavoriteCommand(
++      {
++        type: 'set-favorite',
++        liked: true,
++        expectedTrackId: 'qq:42',
++        requestId: 'other-provider'
++      },
++      target
++    ),
++    false
++  )
++  assert.equal(toggleCount, 0)
++
++  currentTrack.value = makeTrack({ id: 'ncm:42', filePath: 'ncm:42', source: 'ncm' })
++  favoriteLiked.value = true
++  assert.equal(
++    dispatchSetFavoriteCommand(
++      {
++        type: 'set-favorite',
++        liked: true,
++        expectedTrackId: 'ncm:42',
++        requestId: 'noop'
++      },
++      target
++    ),
++    false
++  )
++  assert.equal(toggleCount, 0)
++
++  favoriteLiked.value = false
++  assert.equal(
++    dispatchSetFavoriteCommand(
++      {
++        type: 'set-favorite',
++        liked: true,
++        expectedTrackId: 'ncm:42',
++        requestId: 'apply'
++      },
++      target
++    ),
++    true
++  )
++  assert.equal(toggleCount, 1)
++})
+diff --git a/src/renderer/src/app/useMiniPlayerSync.ts b/src/renderer/src/app/useMiniPlayerSync.ts
+index f53d9a6..b319721 100644
+--- a/src/renderer/src/app/useMiniPlayerSync.ts
++++ b/src/renderer/src/app/useMiniPlayerSync.ts
+@@ -6,6 +6,7 @@ import type {
+ } from '../../../shared/miniPlayer'
+ import type { Track } from '../types/music'
+ import type { PlayMode } from '../types/settings'
++import { getTrackProviderId } from '../providers/mediaProvider.ts'
+ import { buildLyricLines, findActiveLyricIndex } from '../utils/lyrics.ts'
+ 
+ function compactLyricLine(line: ReturnType<typeof buildLyricLines>[number]): {
+@@ -65,6 +66,33 @@ interface MiniPlayerSyncOptions {
+   toggleFavorite: () => Promise<void>
+ }
+ 
++type SetFavoriteCommand = Extract<MiniPlayerCommand, { type: 'set-favorite' }>
++type SetFavoriteTarget = Pick<
++  MiniPlayerSyncOptions,
++  'currentTrack' | 'favoriteAvailable' | 'favoriteLiked' | 'favoriteLoading' | 'toggleFavorite'
++>
++
++export function dispatchSetFavoriteCommand(
++  command: SetFavoriteCommand,
++  target: SetFavoriteTarget
++): boolean {
++  const track = target.currentTrack.value
++  if (
++    !track ||
++    track.id !== command.expectedTrackId ||
++    getTrackProviderId(track) !== 'ncm' ||
++    !target.favoriteAvailable.value ||
++    target.favoriteLoading.value ||
++    target.favoriteLiked.value === command.liked
++  ) {
++    return false
++  }
++  void target.toggleFavorite().catch((error) => {
++    console.error('[taskbar-bridge] Failed to set favorite:', error)
++  })
++  return true
++}
++
+ export function buildMiniPlayerStateSnapshot(
+   source: MiniPlayerStateSource
+ ): MiniPlayerStateSnapshot {
+@@ -74,6 +102,7 @@ export function buildMiniPlayerStateSnapshot(
+     track: track
+       ? {
+           id: track.id,
++          providerId: getTrackProviderId(track),
+           title: track.title,
+           artist: track.artist,
+           album: track.album,
+@@ -213,6 +242,9 @@ export function useMiniPlayerSync(options: MiniPlayerSyncOptions): void {
+           console.error('[tray] Failed to toggle favorite:', error)
+         })
+         break
++      case 'set-favorite':
++        dispatchSetFavoriteCommand(command, options)
++        break
+     }
+   }
+ 
+diff --git a/src/renderer/src/components/PlayerBar.vue b/src/renderer/src/components/PlayerBar.vue
+index 947f24c..ef24f0d 100644
+--- a/src/renderer/src/components/PlayerBar.vue
++++ b/src/renderer/src/components/PlayerBar.vue
+@@ -37,7 +37,6 @@ import listLoopIcon from '../assets/icons/list-loop-repeat.svg'
+ import sequentialIcon from '../assets/icons/sequential-playback.svg'
+ import shuffleIcon from '../assets/icons/shuffle.svg'
+ import heartModeIcon from '../assets/icons/heart-mode.svg'
+-import { useFavoriteButton } from './player-bar/useFavoriteButton'
+ import { useFloatingPanels } from './player-bar/useFloatingPanels'
+ import { usePlaybarAutoHide } from './player-bar/usePlaybarAutoHide.ts'
+ import { resolveSeekTargetSeconds, type PlayerBarMode } from '../../../shared/playerBar.ts'
+@@ -84,13 +83,22 @@ const props = withDefaults(
+      * geometry consumers query.
+      */
+     hiddenBar?: boolean
++    favoriteButtonVisible?: boolean
++    favoriteButtonLiked?: boolean
++    favoriteButtonLoading?: boolean
++    favoriteButtonTitle?: string
++    toggleFavorite?: () => Promise<void>
+   }>(),
+   {
+     preview: false,
+     visualizerVisible: false,
+     mode: 'standard',
+     autoHide: false,
+-    hiddenBar: false
++    hiddenBar: false,
++    favoriteButtonVisible: false,
++    favoriteButtonLiked: false,
++    favoriteButtonLoading: false,
++    favoriteButtonTitle: ''
+   }
+ )
+ 
+@@ -182,17 +190,7 @@ const playerLeftKey = computed(
+   () =>
+     `pl:${currentTrack.value?.id ?? 'none'}:${currentTrack.value?.queueEntryId ?? ''}:${currentTrack.value?.cover ?? ''}`
+ )
+-const {
+-  localPlaylists,
+-  addToPlaylist,
+-  addTracksToPlaylist,
+-  removeFromPlaylist,
+-  createPlaylist,
+-  createPlaylistWithTracks,
+-  isFavoriteTrack,
+-  addFavoriteTrack,
+-  removeFavoriteTrack
+-} = useMusicStore()
++const { localPlaylists, addTracksToPlaylist, createPlaylistWithTracks } = useMusicStore()
+ const mediaProviders = useMediaProviders()
+ const { pushNotice } = useAppNoticeStore()
+ // Reason-code copy is resolved per locale, so the chip labels re-render when the
+@@ -729,24 +727,6 @@ const fullyHidden = computed(() => props.hiddenBar && !props.preview)
+ // exclusive; this holds even if a caller forwards both.
+ const autoHideActive = computed(() => props.autoHide && !fullyHidden.value && !props.preview)
+ 
+-const {
+-  favoriteButtonVisible,
+-  favoriteButtonLiked,
+-  favoriteButtonLoading,
+-  favoriteButtonTitle,
+-  toggleFavorite
+-} = useFavoriteButton({
+-  currentTrack,
+-  playlists: localPlaylists,
+-  mediaProviders,
+-  addToPlaylist,
+-  removeFromPlaylist,
+-  createPlaylist,
+-  isFavoriteTrack,
+-  addFavoriteTrack,
+-  removeFavoriteTrack
+-})
+-
+ const modeLabels: Record<string, string> = {
+   sequential: '顺序播放',
+   listLoop: '列表循环',
+diff --git a/src/renderer/src/components/player-bar/favoriteButtonOwnership.test.ts b/src/renderer/src/components/player-bar/favoriteButtonOwnership.test.ts
+new file mode 100644
+index 0000000..292effa
+--- /dev/null
++++ b/src/renderer/src/components/player-bar/favoriteButtonOwnership.test.ts
+@@ -0,0 +1,35 @@
++import assert from 'node:assert/strict'
++import { readFileSync } from 'node:fs'
++import test from 'node:test'
++
++const app = readFileSync(new URL('../../App.vue', import.meta.url), 'utf8')
++const playerBar = readFileSync(new URL('../PlayerBar.vue', import.meta.url), 'utf8')
++
++test('App owns the favorite state and forwards it to PlayerBar', () => {
++  const favoriteButtonInstances =
++    (app.match(/\buseFavoriteButton\s*\(/g) ?? []).length +
++    (playerBar.match(/\buseFavoriteButton\s*\(/g) ?? []).length
++
++  assert.equal(favoriteButtonInstances, 1)
++  assert.doesNotMatch(playerBar, /import\s+\{\s*useFavoriteButton\s*\}/)
++
++  for (const binding of [
++    ':favorite-button-visible="favoriteButtonVisible"',
++    ':favorite-button-liked="favoriteButtonLiked"',
++    ':favorite-button-loading="favoriteButtonLoading"',
++    ':favorite-button-title="favoriteButtonTitle"',
++    ':toggle-favorite="toggleFavorite"'
++  ]) {
++    assert.ok(app.includes(binding), `App must pass ${binding} to PlayerBar`)
++  }
++
++  for (const prop of [
++    'favoriteButtonVisible?: boolean',
++    'favoriteButtonLiked?: boolean',
++    'favoriteButtonLoading?: boolean',
++    'favoriteButtonTitle?: string',
++    'toggleFavorite?: () => Promise<void>'
++  ]) {
++    assert.ok(playerBar.includes(prop), `PlayerBar must accept ${prop}`)
++  }
++})
+diff --git a/src/shared/miniPlayer.test.ts b/src/shared/miniPlayer.test.ts
+index 16cdef9..d225cad 100644
+--- a/src/shared/miniPlayer.test.ts
++++ b/src/shared/miniPlayer.test.ts
+@@ -182,7 +182,8 @@ test('mini player backgrounds accept only managed cache image urls', () => {
+ test('mini player state normalization keeps only the renderer snapshot contract', () => {
+   const state = normalizeMiniPlayerStateSnapshot({
+     track: {
+-      id: 'local:1',
++      id: 'ncm:1',
++      providerId: ' ncm ',
+       title: 'Night Drive',
+       artist: 'Twilight Echo',
+       album: 'Afterglow',
+@@ -207,6 +208,7 @@ test('mini player state normalization keeps only the renderer snapshot contract'
+   })
+ 
+   assert.equal(state.track?.title, 'Night Drive')
++  assert.equal(state.track?.providerId, 'ncm')
+   assert.equal('filePath' in (state.track as object), false)
+   assert.equal(state.track?.cover, 'cover://abc.jpg')
+   assert.equal(state.track?.format, 'FLAC')
+@@ -222,6 +224,18 @@ test('mini player state normalization keeps only the renderer snapshot contract'
+   assert.equal(state.queueIndex, 2)
+ })
+ 
++test('mini player track snapshot rejects invalid provider ids', () => {
++  const invalid = normalizeMiniPlayerStateSnapshot({
++    track: { id: 'remote:1', providerId: '../../ncm', title: 'Unsafe provider' }
++  })
++  assert.equal(invalid.track?.providerId, null)
++
++  const missing = normalizeMiniPlayerStateSnapshot({
++    track: { id: 'D:/Music/local.flac', title: 'Local file' }
++  })
++  assert.equal(missing.track?.providerId, null)
++})
++
+ test('mini player track snapshot clamps quality numbers and drops unsafe ones', () => {
+   const state = normalizeMiniPlayerStateSnapshot({
+     track: {
+@@ -341,6 +355,47 @@ test('mini player commands reject invalid payloads and clamp numeric controls',
+   assert.deepEqual(normalizeMiniPlayerCommand({ type: 'toggle-favorite' }), {
+     type: 'toggle-favorite'
+   })
++  assert.deepEqual(
++    normalizeMiniPlayerCommand({
++      type: 'set-favorite',
++      liked: true,
++      expectedTrackId: 'ncm:42',
++      requestId: 'taskbar-like-1'
++    }),
++    {
++      type: 'set-favorite',
++      liked: true,
++      expectedTrackId: 'ncm:42',
++      requestId: 'taskbar-like-1'
++    }
++  )
++  assert.equal(
++    normalizeMiniPlayerCommand({
++      type: 'set-favorite',
++      liked: 'yes',
++      expectedTrackId: 'ncm:42',
++      requestId: 'taskbar-like-2'
++    }),
++    null
++  )
++  assert.equal(
++    normalizeMiniPlayerCommand({
++      type: 'set-favorite',
++      liked: false,
++      expectedTrackId: '',
++      requestId: 'taskbar-like-3'
++    }),
++    null
++  )
++  assert.equal(
++    normalizeMiniPlayerCommand({
++      type: 'set-favorite',
++      liked: false,
++      expectedTrackId: 'ncm:42',
++      requestId: ''
++    }),
++    null
++  )
+   assert.equal(normalizeMiniPlayerCommand({ type: 'set-play-mode', value: 'unsafe' }), null)
+   assert.equal(normalizeMiniPlayerCommand({ type: 'seek', value: Number.NaN }), null)
+   assert.equal(normalizeMiniPlayerCommand({ type: 'delete-library' }), null)
+diff --git a/src/shared/miniPlayer.ts b/src/shared/miniPlayer.ts
+index 533b679..1ba02ec 100644
+--- a/src/shared/miniPlayer.ts
++++ b/src/shared/miniPlayer.ts
+@@ -87,6 +87,7 @@ export interface MiniPlayerSettings {
+ 
+ export interface MiniPlayerTrackSnapshot {
+   id: string
++  providerId: string | null
+   title: string
+   artist: string
+   album: string
+@@ -149,6 +150,12 @@ export type MiniPlayerCommand =
+   | { type: 'cycle-play-mode' }
+   | { type: 'set-play-mode'; value: MiniPlayerPlayMode }
+   | { type: 'toggle-favorite' }
++  | {
++      type: 'set-favorite'
++      liked: boolean
++      expectedTrackId: string
++      requestId: string
++    }
+   | { type: 'seek'; value: number }
+   | { type: 'set-volume'; value: number }
+ 
+@@ -325,6 +332,8 @@ export const EMPTY_MINI_PLAYER_STATE: Readonly<MiniPlayerStateSnapshot> = Object
+ })
+ 
+ const MAX_TRACK_TEXT_LENGTH = 512
++const MAX_PROVIDER_ID_LENGTH = 128
++const MAX_COMMAND_REQUEST_ID_LENGTH = 128
+ const MAX_MINI_PLAYER_LYRIC_LINES = 500
+ const MAX_COVER_URL_LENGTH = 16_384
+ // Legacy embedded library covers are full data: URLs and routinely exceed the
+@@ -633,6 +642,21 @@ export function normalizeMiniPlayerCommand(raw: unknown): MiniPlayerCommand | nu
+       const playMode = normalizeMiniPlayerPlayMode(value.value, null)
+       return playMode ? { type: 'set-play-mode', value: playMode } : null
+     }
++    case 'set-favorite': {
++      const expectedTrackId =
++        typeof value.expectedTrackId === 'string' ? value.expectedTrackId.trim() : ''
++      const requestId = typeof value.requestId === 'string' ? value.requestId.trim() : ''
++      if (
++        typeof value.liked !== 'boolean' ||
++        !expectedTrackId ||
++        expectedTrackId.length > MAX_TRACK_TEXT_LENGTH ||
++        !requestId ||
++        requestId.length > MAX_COMMAND_REQUEST_ID_LENGTH
++      ) {
++        return null
++      }
++      return { type: 'set-favorite', liked: value.liked, expectedTrackId, requestId }
++    }
+     case 'seek':
+       if (typeof value.value !== 'number' || !Number.isFinite(value.value)) return null
+       return {
+@@ -667,6 +691,7 @@ function normalizeTrack(raw: unknown): MiniPlayerTrackSnapshot | null {
+       : null
+   return {
+     id: id || title,
++    providerId: normalizeMiniPlayerProviderId(value.providerId),
+     title: title || '未知曲目',
+     artist: normalizeText(value.artist, MAX_TRACK_TEXT_LENGTH) || '未知艺术家',
+     album: normalizeText(value.album, MAX_TRACK_TEXT_LENGTH),
+@@ -678,6 +703,14 @@ function normalizeTrack(raw: unknown): MiniPlayerTrackSnapshot | null {
+   }
+ }
+ 
++function normalizeMiniPlayerProviderId(value: unknown): string | null {
++  if (typeof value !== 'string') return null
++  const providerId = value.trim().toLowerCase()
++  return providerId.length <= MAX_PROVIDER_ID_LENGTH && /^[a-z0-9][a-z0-9._:-]*$/.test(providerId)
++    ? providerId
++    : null
++}
++
+ function normalizeCoverHandle(value: unknown): string {
+   if (typeof value !== 'string') return ''
+   const trimmed = value.trim()

@@ -1,223 +1,209 @@
-# Taskbar Fluent Media Player · 网易云 / Twilight Echo 扩展版
+# Taskbar Fluent Media Player · 网易云 / Twilight Echo
 
-这是 [Salyts/Taskbar-Fluent-Media-Player](https://github.com/Salyts/Taskbar-Fluent-Media-Player) 的非官方 Windhawk 二次开发版，专门用于在 Windows 11 任务栏控制网易云音乐桌面端与 [Twilight Echo](https://github.com/asenyarzc-cpu/Twilight_Echo)。
+这是 [Salyts/Taskbar-Fluent-Media-Player](https://github.com/Salyts/Taskbar-Fluent-Media-Player) 的非官方 Windhawk 扩展版，面向 Windows 11 任务栏，专门适配网易云音乐桌面端与 [Twilight Echo](https://github.com/asenyarzc-cpu/Twilight_Echo)。
 
-本分支保留原版的 Fluent 外观和高度自定义能力，重点增加了双客户端切换、红心收藏、任务栏同步歌词、紧凑布局、简体中文界面以及 Taskbar Styler 布局适配。它不是面向所有媒体应用的通用播放器。
+当前 Mod 版本为 `1.6.0-net36`。Twilight 本地桥目前只支持官方发布版 `1.1.2`。
 
-## 主要功能
+## 功能
 
-- 默认使用紧凑 Album 入口。有曲目时保留专辑封面和红心，其余详情与控制按钮可通过“词”按钮展开。
-- 音源切换按钮和歌词按钮仅在鼠标悬停时出现，减少任务栏常驻占用。
-- 支持网易云音乐与 Twilight Echo 之间切换，选择结果会由 Windhawk 保存。
-- 支持红心收藏、上一首、播放/暂停和下一首。已收藏显示实心红心，取消后恢复空心。
-- 支持任务栏同步歌词。原文与译文按时间戳合并为上下两行，居中显示；歌词模式不会触发标题横向滚动。
-- 未播放或所选客户端未运行时隐藏无效按钮，只保留应用图标或 Album 占位；可从右键菜单启动对应应用。
-- 提供跟随系统、简体中文和英语三种界面语言。
-- 默认开启 7 柱立体声音频可视化，颜色会随专辑封面变化。
-- 保留上游的多位置锚定、Fluent 背景、亮暗配色、封面与按钮样式、尺寸间距、音频频谱和鼠标动作设置。
-- 针对 Windows 11 Taskbar Styler - Fork 常见的移动与负边距布局进行动态定位，默认 `Album margin = 0 0` 时通常无需手工增加 9 像素补偿。
+- 在任务栏显示专辑封面、歌名或同步歌词，并提供上一首、播放/暂停、下一首控制。
+- “歌词”和“歌名”是二选一的固定显示模式。歌词模式下，鼠标悬停会在原文字区域临时切换为歌名，不会弹出额外气泡。
+- 原文与译文可上下两行居中显示；切歌刷新时保留原来的任务栏宽度和占位，避免先收缩再展开。
+- 在网易云音乐与 Twilight Echo 之间切换，并记住所选客户端。
+- Twilight 安装本地桥后，可在后台可靠同步歌曲、播放状态、歌词、封面和真实收藏状态。
+- Twilight 红心只在网易云账号确认收藏成功后点亮；读取中显示问号，失败时不会伪装成功。
+- 官方网易云模式暂不显示红心。SMTC 不提供收藏接口，模拟按键方案无法可靠确认账号侧结果。
+- 默认启用随专辑封面变色的 7 柱立体声音频可视化。
+- 支持跟随系统、简体中文和英语界面，保留上游的 Fluent 外观与大部分任务栏布局选项。
+- 已移除容易卡住的悬停迷你播放器，悬停区域只负责显示歌名及操作按钮。
 
-## 发布版默认外观
+## 能力对照
 
-发布版默认值以维护者当前实际使用的布局为基准：播放器位于开始按钮右侧，采用透明任务栏背景、32 像素 Album、紧凑歌词布局，以及位于右侧的 7 柱立体声音频可视化。可视化使用“动态专辑颜色”、`5 / 1` 柱体尺寸和 `200` 灵敏度，会根据当前封面改变颜色。
+| 模式 | 播放控制 | 歌词与封面 | 红心收藏 |
+| --- | --- | --- | --- |
+| 网易云音乐桌面端 | SMTC | SMTC + 本地播放信息匹配 | 已屏蔽 |
+| Twilight Echo，无桥 | SMTC、可访问性接口等兼容路径 | 尽力读取日志与会话文件 | 不可用 |
+| Twilight Echo，已装桥 | 本地桥权威控制 | 本地桥权威状态 | 仅网易云来源曲目可用，写入 Twilight 当前登录的网易云账号 |
 
-Album 与播放器区域滚轮默认切换曲目，Album 点击会穿透到播放器区域，因此双击 Album 也可播放或暂停。迷你播放器不随这套预设启用。
+## 安装 Windhawk Mod
+
+1. 从 [Windhawk 中文官网下载页](https://www.windhawk.cn/download.html) 安装 Windhawk。
+2. 下载 [`taskbar-fluent-media-player-netease.wh.cpp`](./taskbar-fluent-media-player-netease.wh.cpp)。
+3. 在 Windhawk 中新建本地 Mod，粘贴完整源码并编译。
+4. 如果已有 ID 为 `taskbar-fluent-media-player-netease` 的 Mod，请进入原 Mod 的编辑页全量替换源码，不要新建第二份同 ID Mod。
+5. 在“应用接入”中核对两个客户端的程序路径，再选择播放器位置、文本模式和语言。
+
+仓库目前不提供 Windhawk 安装器。首次安装仍需用户在 Windhawk 界面完成本地 Mod 的创建与编译；AI Agent 可以准备源码并核验结果，但 Twilight 桥才支持按下文流程自动部署。
+
+网易云音乐必须在客户端设置中开启 SMTC，也就是“开启后播放信息同步到系统菜单栏及壁纸等第三方软件”。
+
+## 安装 Twilight 本地桥
+
+桥不是独立常驻程序。部署工具会在严格核对版本后，从 Twilight Echo `v1.1.2` 的固定源码提交构建一个带桥的 `app.asar`，备份原文件，再仅替换这个文件。它不会修改 `%APPDATA%\TwilightEcho` 中的登录、歌单或播放器设置。
+
+请先克隆或下载完整仓库，并在仓库根目录打开 PowerShell；只下载 Windhawk 的 `.cpp` 源文件无法运行桥部署工具。
+
+准备条件：Windows PowerShell 5.1 或 PowerShell 7、Git、Node.js 22 与 Corepack。第一次构建需要联网下载 Twilight 的项目依赖。
+
+下方示例使用 PowerShell 7 的 `pwsh`。只有 Windows PowerShell 5.1 时，把 `pwsh -NoProfile` 替换为 `powershell.exe -NoProfile -ExecutionPolicy Bypass` 即可，例如：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\twilight-bridge.ps1 status -InstallDir 'D:\TwilightEcho'
+```
+
+```powershell
+# 只查看状态
+pwsh -NoProfile -File .\tools\twilight-bridge.ps1 status -InstallDir 'D:\TwilightEcho'
+
+# 先预演，不改文件
+pwsh -NoProfile -File .\tools\twilight-bridge.ps1 ensure -InstallDir 'D:\TwilightEcho' -WhatIf
+
+# 从系统托盘彻底退出 Twilight Echo 后安装
+pwsh -NoProfile -File .\tools\twilight-bridge.ps1 ensure -InstallDir 'D:\TwilightEcho'
+
+# 卸载桥并恢复已备份的原版 app.asar，同样要先退出 Twilight Echo
+pwsh -NoProfile -File .\tools\twilight-bridge.ps1 remove -InstallDir 'D:\TwilightEcho'
+```
+
+工具始终输出 JSON，并采用以下约束：
+
+- 只接受 `TwilightEcho.exe` 文件版本 `1.1.2`。
+- 只接受原版 `app.asar` 的固定 SHA-256：`54C5BA910CB060A52D6C53AEBF96295577F7F2A6D597B7FCCFBB9954D5D27562`。
+- 遇到未知版本、未知 `app.asar` 或正在运行的 Twilight 会先停止，不会强杀进程或覆盖文件。
+- 原文件备份及部署状态保存在安装目录同级的 `TwilightEcho.taskbar-bridge` 文件夹。
+- 新版本启动后必须通过本地桥健康检查；失败时工具会尝试恢复原文件。若自动恢复也失败，JSON 会返回 `manual_restore_required`、已验证备份路径和明确的恢复动作，不会把失败报告为成功。
+- 断电导致当前 `app.asar` 缺失时，`status` 会返回已验证备份的位置；`remove` 可执行显式恢复。
+
+### 给 AI Agent 的部署顺序
+
+1. 读取本 README 和 [`integrations/twilight/v1.1.2.json`](./integrations/twilight/v1.1.2.json)。
+2. 先运行 `status`，再运行 `ensure -WhatIf`。
+3. 如果返回 `close_twilight_required`，让用户从系统托盘彻底退出 Twilight Echo；不得强杀。
+4. 运行 `ensure`，只把退出码 `0` 且 `outcome` 为 `installed` 或 `healthy` 视为成功。
+5. 再运行一次 `status`，确认 `outcome` 为 `healthy`。
+6. 不要绕过版本、哈希、备份或健康检查，也不要直接改用户的 Twilight 数据目录。
+
+更精简的机器协作说明见 [`AGENTS.md`](./AGENTS.md)。
+
+## 桥如何工作
+
+Twilight 启动时会在 `%APPDATA%\TwilightEcho\taskbar-bridge.json` 写入当前实例的随机端口、临时令牌和实例 ID。Windhawk Mod 只连接 `127.0.0.1`，请求必须携带该令牌。
+
+桥提供三个本机入口：
+
+- `GET /taskbar/v1/health`
+- `GET /taskbar/v1/state`
+- `POST /taskbar/v1/command`
+
+收藏使用带目标歌曲 ID、目标状态和请求 ID 的 `set-favorite` 命令。它只接受当前 `providerId` 为 `ncm` 的曲目。Twilight 在真正调用网易云 provider 前再次核对歌曲，服务端也会等待账号侧状态回传；只有 `confirmed` 或 `noop` 才算成功。这避免迟到的点击误收藏下一首，也避免任务栏先亮心、账号歌单却没有变化。
 
 ## 默认交互
 
 | 操作 | 默认行为 |
 | --- | --- |
 | 左键单击 | 无操作 |
-| 播放器区域左键双击 | 播放或暂停 |
-| 专辑封面左键双击 | 由“封面点击穿透”及 Album 独立动作设置决定 |
-| Album 或播放器区域右键 | 打开媒体菜单 |
+| 播放器或 Album 双击 | 播放/暂停 |
+| Album 或播放器右键 | 打开媒体菜单 |
+| Album 或播放器滚轮 | 上一首/下一首 |
 | 悬停后点击“暮 / 云” | 切换 Twilight Echo / 网易云音乐 |
-| 悬停后点击“词” | 展开或收起歌词与播放控制 |
+| 悬停后点击“词” | 展开或收起歌词与控制区 |
 
-“打开媒体应用”只从右键菜单执行，不会因左键单击 Album 而意外启动客户端。
-
-## 使用前准备
-
-### 网易云音乐
-
-必须在网易云音乐设置中开启 SMTC，也就是“开启后播放信息同步到系统菜单栏及壁纸等第三方软件”。未开启时，本 Mod 无法稳定取得歌名、封面和播放状态，会把网易云视为没有可用媒体会话。
-
-### [Twilight Echo](https://github.com/asenyarzc-cpu/Twilight_Echo)
-
-- 当前按 Twilight Echo `1.1.2` 测试。
-- 建议在“设置 > 常规”中开启“原生媒体控制（SMTC）”。
-- 无论 SMTC 是否可用，当前曲目身份、播放状态、进度、控制能力和收藏状态都以客户端公开的 Windows UI Automation 信息为准，避免系统媒体信息更新较慢时让任务栏落后一曲。SMTC 仍用于系统级播放命令，并且只在曲目身份一致时补充原生封面。
-- 如果 Twilight Echo 不在默认位置，请在本 Mod 的“应用接入”中填写 `TwilightEcho.exe` 的完整路径。
-- UI Automation 兼容模式下不提供随机、循环和快进/后退能力。
-
-## 安装与更新
-
-1. 安装 [Windhawk](https://windhawk.net/)。
-2. 下载仓库中的 [`taskbar-fluent-media-player-netease.wh.cpp`](./taskbar-fluent-media-player-netease.wh.cpp)。
-3. 在 Windhawk 中新建本地 Mod，粘贴完整源码并点击“编译 Mod”。
-4. 如果已经存在 ID 为 `taskbar-fluent-media-player-netease` 的版本，请进入原 Mod 的编辑页全量替换源码，不要新建第二份同 ID Mod。
-5. 在“应用接入”中核对网易云音乐和 Twilight Echo 的程序路径，再按需选择任务栏位置与语言。
-
-更新后若界面没有立即刷新，可重新加载 Mod，或重启一次资源管理器。
-
-## 数据访问说明
-
-本 Mod 不修改网易云音乐或 Twilight Echo 客户端文件，也不注入 `app.asar`、不安装桥接程序。
-
-为完成歌词、封面和兼容控制，它会：
-
-- 只读网易云音乐的 `%LOCALAPPDATA%\NetEase\CloudMusic\webdata\file\playingList`，用于匹配当前曲目 ID。
-- 在 Twilight Echo 的系统封面不可读取时，只读 `%APPDATA%\TwilightEcho\playback-session.json`，并且仅在歌名、歌手与当前任务栏曲目一致时使用其中的 `coverSource`。
-- 通过 Windows UI Automation 读取并调用客户端已经公开的播放与收藏控件。
-- 访问 Twilight Echo 本机的 `127.0.0.1:3100` 网易云接口，并向网易云歌词接口或图片 CDN 请求当前曲目的歌词与封面。
-
-这些读取均在本机完成，本仓库不包含账号凭据、歌曲、歌词库、Twilight Echo 客户端或网易云音乐客户端。
+“打开媒体应用”只在右键菜单中执行，普通单击不会启动客户端。
 
 ## 已知限制
 
-- **迷你播放器可能卡住，目前作为实验性功能保留，默认关闭且不建议启用。** 设置页和相关动作选项均有提示；任务栏主体、歌词与播放控制不依赖它。
-- Twilight Echo 的 UI Automation 兼容依赖客户端公开的界面结构。后续版本若修改相关元素，曲目信息、控制或红心可能暂时失效。
-- 歌词和搜索封面依赖网络、网易云接口以及标题、歌手、时长匹配。同名同歌手的不同版本可能匹配到错误歌词；封面判断更保守，存在歧义时会留空而不显示错误图片。
-- 默认歌词模式会保留紧凑 Album 入口，因此不会沿用原版的“无媒体、全屏或空闲时完全隐藏”行为。
-- Taskbar Styler 主题若大幅重命名、删除系统 XAML 元素或采用特殊布局，锚点仍可能失效。
+- Twilight 桥当前严格绑定 `v1.1.2`。客户端升级后，应先使用 `remove` 恢复原文件，再升级并等待新的兼容清单。
+- 官方网易云模式暂不提供红心收藏。
+- 无桥模式只作为兼容兜底，Twilight 在后台时可能无法及时暴露新歌曲或收藏状态。
+- 歌词仍依赖歌曲 ID或网易云元数据匹配；同名歌曲的不同版本可能匹配错误。
+- Taskbar Styler 主题如果删除或大幅改名系统任务栏 XAML 元素，锚点仍可能失效。
+- 当前只完成和发布 x64 验证；x86 构建留到功能稳定后再考虑。
 
-## 版本说明
+## 许可与声明
 
-当前版本：`1.6.0-net26`
-
-- 修复 Twilight Echo 第一次切歌没有更新、第二次才追到上一首的“一曲延迟”。插件不读取播放队列，也不猜下一首；曲名与歌手现在以客户端当前界面为准。
-- 切歌时立即作废上一曲的歌词和封面任务，在短暂更新窗口内拒绝旧曲快照，避免旧内容重新写回。
-- Twilight Echo 歌词时钟改为跟随实际进度读数。只有观察到进度真实前进后才做最多 1 秒的平滑补偿，客户端启动或卡顿时不会无限提前。
-- 统一 Twilight Echo 状态提交入口，并拒绝播放命令前启动的过期查询，修复暂停后歌词继续推进的问题。
-- Album 暂停遮罩改为显示播放图标，符合“点击后继续播放”的操作语义。
-- 默认关闭暂停时的封面暂停遮罩，避免播放与暂停状态下视觉上始终存在暂停符号；中间播放按钮仍会正常切换。
-- 迷你播放器改为默认关闭，并在设置页标记已知问题。
-- 发布默认值同步维护者当前布局，并默认启用动态专辑颜色音频可视化。
-- Album 与歌词区域都可作为迷你播放器悬停区域，但不建议启用该实验功能。
-- 修复 Twilight Echo 私有图片协议导致任务栏和迷你播放器无法显示封面的问题。
-- 封面搜索增加歧义判断，避免同名版本串图。
-
-## 上游、许可与声明
-
-- 原版作者：[Salyts](https://github.com/Salyts/Taskbar-Fluent-Media-Player)。
-- 上游音频可视化采集与 FFT 实现来源：[GR0UD/Taskbar Media Player](https://github.com/GR0UD/windhawk-mods)。
-- 本修改版维护者：OJY。
-- 本项目继续按 **MIT License** 分发，并保留原作者 **Salyts** 的完整版权和许可声明，详见 [`LICENSE`](./LICENSE)。
+- Windhawk Mod 代码继承上游的 MIT License，见 [`LICENSE`](./LICENSE)。原作者为 [Salyts](https://github.com/Salyts/Taskbar-Fluent-Media-Player)。
+- 音频可视化采集与 FFT 实现来源于 [GR0UD/Taskbar Media Player](https://github.com/GR0UD/windhawk-mods)。
+- Twilight 桥补丁基于 Apache-2.0 许可的 [Twilight Echo](https://github.com/asenyarzc-cpu/Twilight_Echo)，其补丁与部署材料见 [`integrations/twilight`](./integrations/twilight)，许可见 [`integrations/twilight/LICENSE`](./integrations/twilight/LICENSE)。
 - 本项目与 Salyts、网易云音乐及 Twilight Echo 官方均无隶属关系，也不代表其认可或背书。
-
-原版的 MIT License 明确允许使用、复制、修改和发布，但发布副本必须保留原版权与许可声明。
-
-问题反馈请提交到本仓库的 [Issues](https://github.com/OJY-bot/taskbar-fluent-media-player-netease-twilight/issues)。
 
 ---
 
 # English
 
-This is an unofficial Windhawk fork of [Salyts/Taskbar-Fluent-Media-Player](https://github.com/Salyts/Taskbar-Fluent-Media-Player). It is designed specifically for controlling NetEase Cloud Music and [Twilight Echo](https://github.com/asenyarzc-cpu/Twilight_Echo) from the Windows 11 taskbar.
+This is an unofficial Windhawk fork of [Salyts/Taskbar-Fluent-Media-Player](https://github.com/Salyts/Taskbar-Fluent-Media-Player), specialized for NetEase Cloud Music and [Twilight Echo](https://github.com/asenyarzc-cpu/Twilight_Echo) on the Windows 11 taskbar.
 
-The fork keeps the upstream Fluent appearance and customization options while adding a two-client selector, favorites, synchronized taskbar lyrics, a compact layout, Simplified Chinese localization, and compatibility work for Taskbar Styler layouts. It is not a general-purpose controller for arbitrary media applications.
+Current mod version: `1.6.0-net36`. The optional Twilight bridge currently targets the official Twilight Echo `1.1.2` release only.
 
 ## Features
 
-- Uses a compact Album entry by default. While a track is available, the artwork and heart remain visible; the lyric button expands the details and transport controls.
-- The client selector and lyric toggle appear only on hover, reducing permanent taskbar usage.
-- Switches between NetEase Cloud Music and Twilight Echo, with the selected client persisted by Windhawk.
-- Supports favorite/unfavorite, previous, play/pause, and next. A liked track uses a filled heart; unliking restores the outline.
-- Shows synchronized taskbar lyrics. Original and translated lines are merged by timestamp, displayed on two centered lines, and excluded from title scrolling.
-- When playback is unavailable, unsupported buttons are hidden and only the app icon or Album placeholder remains. The selected app can be launched from the context menu.
-- Provides Follow system, Simplified Chinese, and English interface languages.
-- Enables a seven-bar stereo visualizer by default, with colors derived dynamically from the current album artwork.
-- Retains upstream position anchors, Fluent backgrounds, light/dark colors, artwork and button styling, dimensions, spacing, spectrum options, and mouse actions.
-- Dynamically adapts to common moved-element and negative-margin layouts from Windows 11 Taskbar Styler - Fork. With the default `Album margin = 0 0`, a manual nine-pixel compensation is usually unnecessary.
+- Taskbar artwork, track title or synchronized lyrics, plus previous, play/pause and next controls.
+- Title and lyrics are separate display modes. In lyric mode, hovering temporarily replaces the lyric text in place with the title; it does not open a popup.
+- Centered original/translated lyric lines and a stable placeholder during track changes, avoiding collapse-and-expand layout jumps.
+- Persistent switching between the official NetEase client and Twilight Echo.
+- An optional authenticated loopback bridge for authoritative Twilight background state, controls, lyrics, artwork and account-backed favorites.
+- Twilight hearts change only after the provider confirms the requested state. Unknown state remains visibly pending instead of pretending success.
+- The heart is intentionally hidden in official NetEase mode because SMTC exposes no reliable favorite API.
+- A seven-bar album-color stereo visualizer is enabled by default.
+- The unreliable hover mini-player has been removed.
 
-## Published default appearance
+## Capability matrix
 
-The published defaults mirror the maintainer's everyday layout: the player sits to the right of Start, uses a transparent taskbar background, a 32-pixel Album entry, the compact lyric layout, and a seven-bar stereo visualizer on the right. The visualizer uses Dynamic album color, a `5 / 1` bar size, and sensitivity `200`, so its color follows the current cover.
+| Mode | Transport | Lyrics and artwork | Favorite |
+| --- | --- | --- | --- |
+| Official NetEase client | SMTC | SMTC plus local metadata matching | Disabled |
+| Twilight without bridge | Compatibility fallbacks | Best effort | Unavailable |
+| Twilight with bridge | Authoritative local bridge | Authoritative local bridge | NCM-source tracks only; writes to the NetEase account signed into Twilight |
 
-The mouse wheel changes tracks over both the Album and player areas. Album clicks pass through to the player area, so double-clicking the Album also toggles play/pause. The mini player is not enabled by this preset.
+## Install the Windhawk mod
 
-## Default interactions
+Download [`taskbar-fluent-media-player-netease.wh.cpp`](./taskbar-fluent-media-player-netease.wh.cpp), create a local Windhawk mod, paste the full source and compile it. If the same mod ID already exists, replace its source in the existing editor instead of creating a duplicate. Enable SMTC in the official NetEase client.
 
-| Input | Default behavior |
-| --- | --- |
-| Left click | No action |
-| Double left click on the player area | Play or pause |
-| Double left click on Album | Depends on click-through and the separate Album action setting |
-| Right click on Album or the player area | Open the media context menu |
-| Click `暮 / 云` after hovering | Select Twilight Echo / NetEase Cloud Music |
-| Click `词` after hovering | Expand or collapse lyrics and transport controls |
+This repository does not ship a Windhawk installer. Users still create and compile the local mod in the Windhawk UI; the automated AI-agent workflow below applies to the Twilight bridge.
 
-Open media app is available only from the context menu. A normal left click on Album will not unexpectedly launch a client.
+## Install the Twilight bridge
 
-## Prerequisites
+The deployment tool verifies the exact Twilight Echo `1.1.2` executable and original `app.asar`, builds the pinned open-source patch, backs up the original file and swaps only `app.asar`. It never edits the user's login, playlists or settings under `%APPDATA%\TwilightEcho`.
 
-### NetEase Cloud Music
+Clone or download the complete repository and open PowerShell in its root directory. The bridge tool is not included when only the Windhawk `.cpp` file is downloaded.
 
-SMTC must be enabled in the NetEase client. In the Chinese client this is the option that synchronizes playback information to the system media menu and third-party software. Without it, the mod cannot reliably obtain the title, artwork, or playback state and treats NetEase as having no usable media session.
+Prerequisites: Windows PowerShell 5.1 or PowerShell 7, Git, Node.js 22 and Corepack. The first build downloads project dependencies.
 
-### [Twilight Echo](https://github.com/asenyarzc-cpu/Twilight_Echo)
+The examples below use PowerShell 7 (`pwsh`). On a Windows PowerShell 5.1-only system, replace `pwsh -NoProfile` with `powershell.exe -NoProfile -ExecutionPolicy Bypass`.
 
-- Compatibility has been tested with Twilight Echo `1.1.2`.
-- Enabling Native media controls (SMTC) under Settings > General is recommended.
-- Whether or not SMTC is available, the current track identity, playback state, timeline, available controls, and favorite state come from accessibility elements exposed by the client. This prevents delayed system metadata from leaving the taskbar one track behind. SMTC remains available for system transport commands and supplements native artwork only when the identity matches.
-- If Twilight Echo is installed elsewhere, set the full path to `TwilightEcho.exe` under App integration.
-- Shuffle, repeat, and seeking are unavailable in the UI Automation fallback mode.
+```powershell
+pwsh -NoProfile -File .\tools\twilight-bridge.ps1 status -InstallDir 'D:\TwilightEcho'
+pwsh -NoProfile -File .\tools\twilight-bridge.ps1 ensure -InstallDir 'D:\TwilightEcho' -WhatIf
 
-## Installation and updates
+# Fully exit Twilight Echo from the system tray before ensure/remove.
+pwsh -NoProfile -File .\tools\twilight-bridge.ps1 ensure -InstallDir 'D:\TwilightEcho'
+pwsh -NoProfile -File .\tools\twilight-bridge.ps1 remove -InstallDir 'D:\TwilightEcho'
+```
 
-1. Install [Windhawk](https://windhawk.net/).
-2. Download [`taskbar-fluent-media-player-netease.wh.cpp`](./taskbar-fluent-media-player-netease.wh.cpp) from this repository.
-3. Create a local mod in Windhawk, paste the complete source, and choose Compile Mod.
-4. If a mod with ID `taskbar-fluent-media-player-netease` already exists, replace the source in that mod's editor. Do not create a second mod with the same ID.
-5. Verify both executable paths under App integration, then choose the preferred taskbar position and language.
+The tool always emits JSON. It fails closed on an unknown version or `app.asar`, never force-kills Twilight, and keeps the original under the sibling `TwilightEcho.taskbar-bridge` directory. If the patched app fails its authenticated health check, the tool attempts rollback; a rollback failure is reported as `manual_restore_required` with the verified backup path and required action.
 
-If the interface does not refresh after an update, reload the mod or restart Windows Explorer once.
+For AI agents: run `status`, then `ensure -WhatIf`; ask the user to exit Twilight when the result is `close_twilight_required`; run `ensure`; accept only exit code `0` with `installed` or `healthy`; finally run `status` again and require `healthy`. Never bypass the version, hash, backup or health checks. See [`AGENTS.md`](./AGENTS.md).
 
-## Local data access
+## Bridge protocol
 
-The mod does not modify NetEase Cloud Music or Twilight Echo files. It does not patch `app.asar` or install a bridge.
+Each Twilight launch writes a random loopback port, ephemeral token and instance ID to `%APPDATA%\TwilightEcho\taskbar-bridge.json`. The mod accepts only `127.0.0.1` and authenticates every request.
 
-To provide lyrics, artwork, and fallback controls, it:
+- `GET /taskbar/v1/health`
+- `GET /taskbar/v1/state`
+- `POST /taskbar/v1/command`
 
-- Reads `%LOCALAPPDATA%\NetEase\CloudMusic\webdata\file\playingList` to resolve the current NetEase track ID.
-- When the Twilight Echo system artwork cannot be opened, reads `%APPDATA%\TwilightEcho\playback-session.json` and uses `coverSource` only after the saved title and artist match the current taskbar track.
-- Reads and invokes playback and favorite controls that the clients expose through Windows UI Automation.
-- Calls Twilight Echo's local NetEase endpoint at `127.0.0.1:3100` and requests the current lyrics or artwork from NetEase endpoints and image CDN hosts.
-
-All matching is performed locally. This repository contains no account credentials, songs, lyric database, Twilight Echo client, or NetEase Cloud Music client.
+Favorite writes are accepted only for tracks whose `providerId` is `ncm`. They use an idempotent `set-favorite` request containing the desired state and expected track ID. Twilight validates the provider and track again in the renderer and reports success only after authoritative state confirms it.
 
 ## Known limitations
 
-- **The mini player can become unresponsive. It remains available as an experimental feature, but is disabled by default and is not recommended.** The main taskbar player, lyrics, and transport controls do not depend on it.
-- Twilight Echo fallback control depends on the accessibility structure currently exposed by the client. Future UI changes can temporarily break metadata, controls, or favorite state detection.
-- Lyrics and search-based artwork depend on network access, NetEase endpoints, and title/artist/duration matching. Different releases with the same title and artist can receive the wrong lyrics. Artwork matching is more conservative and stays blank when the result is ambiguous.
-- The default lyric mode keeps the compact Album entry visible, so the upstream hide-on-no-media, fullscreen, and idle behavior is not applied in that mode.
-- A Taskbar Styler theme can still break an anchor if it substantially renames or removes Windows taskbar XAML elements or uses an unusual layout.
+- The bridge is pinned to Twilight Echo `v1.1.2`; restore the original with `remove` before upgrading Twilight.
+- Favorites are disabled in official NetEase mode.
+- Bridge-free Twilight support is a best-effort fallback and can lag while the renderer is suspended.
+- Lyric matching still depends on NetEase IDs or metadata and can confuse different releases with identical names.
+- Highly customized Taskbar Styler themes can still remove the XAML anchor used by the mod.
+- Only x64 is verified at this stage.
 
-## Version
+## License and attribution
 
-Current version: `1.6.0-net26`
+The Windhawk mod is distributed under the upstream MIT License; see [`LICENSE`](./LICENSE). The Twilight bridge patch is derived from Apache-2.0-licensed [Twilight Echo](https://github.com/asenyarzc-cpu/Twilight_Echo); see [`integrations/twilight/LICENSE`](./integrations/twilight/LICENSE). Visualizer capture and FFT work originates from [GR0UD/Taskbar Media Player](https://github.com/GR0UD/windhawk-mods).
 
-- Fixes the Twilight Echo one-track delay where the first skip was ignored and a later skip only revealed the previous track. The mod does not inspect or predict the playback queue; title and artist now follow the client's current UI.
-- Invalidates old lyric and artwork work as soon as a skip succeeds, then rejects old-track snapshots during a short metadata settle window.
-- Drives Twilight Echo lyrics from observed progress. Wall-clock smoothing starts only after real movement and is capped at one second, so startup stalls cannot make lyrics run indefinitely ahead.
-- Uses one Twilight Echo state commit path and rejects observations started before the latest playback command, preventing lyrics from advancing after pause.
-- Shows a play glyph on the paused Album overlay, matching the action performed when clicked.
-- Disables the album-art pause overlay by default so a pause symbol is not always present across both playback states; the main transport button still switches normally.
-- Disables the mini player by default and labels its known issue in settings.
-- Makes both the Album and lyric area valid hover targets for the experimental mini player.
-- Restores Twilight Echo artwork when its private image protocol is inaccessible to Explorer.
-- Rejects ambiguous cover search matches to avoid artwork from a different release.
-- Publishes the maintainer's current layout as the default, including the Dynamic album color audio visualizer.
-
-## Upstream, license, and disclaimer
-
-- Original project and author: [Salyts/Taskbar-Fluent-Media-Player](https://github.com/Salyts/Taskbar-Fluent-Media-Player).
-- Upstream audio capture and FFT implementation: [GR0UD/Taskbar Media Player](https://github.com/GR0UD/windhawk-mods).
-- Fork maintainer: OJY.
-- This project is distributed under the **MIT License** and preserves the complete copyright and license notice of **Salyts**. See [`LICENSE`](./LICENSE).
-- This project is not affiliated with or endorsed by Salyts, NetEase Cloud Music, or Twilight Echo.
-
-The upstream MIT License permits use, copying, modification, and distribution, provided that the original copyright and license notice remain included.
-
-Please report fork-specific problems through this repository's [Issues](https://github.com/OJY-bot/taskbar-fluent-media-player-netease-twilight/issues).
+This project is not affiliated with or endorsed by Salyts, NetEase Cloud Music, or Twilight Echo.

@@ -1,0 +1,16 @@
+{
+  "profileVersion": 1,
+  "target": "TwilightEcho",
+  "releaseTag": "v1.1.2",
+  "sourceCommit": "44516c33909e45f92ea661140f9cfb1e2b6ecbeb",
+  "upstreamUrl": "https://github.com/asenyarzc-cpu/Twilight_Echo.git",
+  "exeName": "TwilightEcho.exe",
+  "exeVersion": "1.1.2",
+  "asarRelativePath": "resources/app.asar",
+  "originalAsarSha256": "54C5BA910CB060A52D6C53AEBF96295577F7F2A6D597B7FCCFBB9954D5D27562",
+  "patchRelativePath": "integrations/twilight/v1.1.2.patch",
+  "discoveryFile": "taskbar-bridge.json",
+  "bridgeVersion": 1,
+  "providerId": "ncm",
+  "providerMethod": "likeTrack"
+}

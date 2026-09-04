@@ -1,0 +1,26 @@
+# Local build and deployment work
+work/
+node_modules/
+dist/
+.pnpm-store/
+
+# Generated binaries and logs
+*.asar
+*.dll
+*.exe
+*.log
+*.tmp
+*.bak
+*.backup
+*.token
+*.secret
+.env
+.env.local
+taskbar-bridge.json
+TwilightEcho.taskbar-bridge/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vs/
+.vscode/
