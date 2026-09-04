@@ -7,7 +7,7 @@
 // @description:ru-RU Taskbar Fluent Media Player — это мод Windhawk, который интегрирует современный медиаплеер в стиле Fluent Design прямо в панель задач Windows 11. Он позволяет управлять музыкой и просматривать информацию о треке без прерывания работы.
 // @version         1.6.0-net36
 // @author          Salyts (original), OJY (fork)
-// @github          https://github.com/OJY-bot/taskbar-fluent-media-player-netease-twilight
+// @github          https://github.com/OJY-lawyer/taskbar-fluent-media-player-Netease-Twilight
 // @license         MIT
 // @include         explorer.exe
 // @compilerOptions -lole32 -loleaut32 -loleacc -luiautomationcore -lruntimeobject -luuid -luser32 -lwindowsapp -lshell32 -lgdi32 -lshlwapi -lwindowscodecs -ldwmapi -lshcore -lksuser -lwinhttp -lbcrypt
@@ -55,7 +55,7 @@
 * [GR0UD](https://github.com/GR0UD) 为上游音频可视化采集与 FFT 实现来源。
 * 本修改版由 OJY 维护，与网易云音乐及 Twilight Echo 官方无隶属或背书关系。
 * Windhawk Mod 按 MIT License 分发；Twilight 桥补丁继承 Twilight Echo 的 Apache-2.0 许可。完整许可与原版权声明见项目仓库。
-* 问题反馈请使用本修改版仓库的 [Issues](https://github.com/OJY-bot/taskbar-fluent-media-player-netease-twilight/issues)。
+* 问题反馈请使用本修改版仓库的 [Issues](https://github.com/OJY-lawyer/taskbar-fluent-media-player-Netease-Twilight/issues)。
 
 ---
 
